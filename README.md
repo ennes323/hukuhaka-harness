@@ -15,7 +15,7 @@ imply that a Claude Code plugin is portable to Codex.
 | Component | Version | Status | Hosts | What it gives you |
 |-----------|---------|--------|-------|-------------------|
 | **hukuhaka-report-planner** | `0.6.0` | Supported | Claude Code, Codex | Frames and structures visual-document requests, directs source-backed anchor construction, and records a finalized `spec.md`. Explicit plan requests stop there; artifact requests delegate construction and visual verification to one designer subagent. |
-| **hukuhaka-engineering-plan** | `0.2.1` | Supported | Claude Code, Codex | Produces repository-grounded implementation plans with closed impact surfaces, exact change deltas, and requirement-to-verification mapping. |
+| **hukuhaka-engineering-plan** | `0.2.2` | Supported | Claude Code, Codex | Produces repository-grounded implementation plans with closed impact surfaces, exact change deltas, and requirement-to-verification mapping. |
 | **hukuhaka-worklog** | `0.4.0` | Supported | Claude Code, Codex | Reads current work at the first non-trivial project task, tracks lifecycle changes from natural requests, records completed or closed outcomes, keeps the newest 25 history entries automatically, and runs setup, status, and recovery archive commands before model invocation. |
 | **hukuhaka-memory-audit** | `0.1.0` | Supported | Codex only | Audits local Codex memory against current engineering evidence and suggests cleanup once the always-loaded summary or supporting store crosses a review threshold. |
 | **hukuhaka-codex** | `0.4.1` | Supported | Claude Code only | Claude Code plugin that delegates planning, review, debate, and transfer work to the Codex runtime. It is not installed into Codex itself. |
@@ -249,8 +249,11 @@ Codex:       $engineering-plan
 
 It inspects the repository before planning, defines observable behavior before
 file changes, challenges important invariants with concrete counterexamples,
-revises contradictions in the main plan, and ends with `Ready`,
-`Ready with assumptions`, or `Blocked`.
+revises contradictions in the main plan, and closes planning with `Ready`,
+`Ready with assumptions`, or `Blocked`. Explicit planning-only requests and
+Plan mode remain read-only. An authorized implementation request continues
+through implementation and required verification once planning and applicable
+approval gates are complete; routine assumptions do not add an approval gate.
 
 ## Worklog workflow
 

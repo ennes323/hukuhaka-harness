@@ -726,7 +726,7 @@ class InstallerSelectionTests(unittest.TestCase):
             summary["hukuhaka-report-planner"],
         )
         self.assertEqual(
-            "0.0.9 → 0.2.1",
+            "0.0.9 → 0.2.2",
             summary["hukuhaka-engineering-plan"],
         )
         self.assertEqual(

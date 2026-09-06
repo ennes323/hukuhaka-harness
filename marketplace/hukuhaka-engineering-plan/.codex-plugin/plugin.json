@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-engineering-plan",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Create repository-grounded, decision-complete engineering plans with closed impact surfaces and exact change deltas.",
   "author": {
     "name": "hukuhaka"

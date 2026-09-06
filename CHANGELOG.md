@@ -7,6 +7,15 @@ Plugin versions (`marketplace/<plugin>/{.claude-plugin,.codex-plugin}/plugin.jso
 are independent from the repository version. Dual-host manifests share one
 plugin version.
 
+## [1.1.17] — 2026-09-06
+
+- Codex AGENTS guidance now continues authorized work across components, asks
+  for approval on unresolved material decisions, and finishes after appropriate
+  verification without unrelated investigation or refactoring.
+- Engineering Plan 0.2.2 keeps explicit planning and Plan mode read-only while
+  returning authorized implementation requests to implementation and verification.
+  Routine assumptions do not create an additional approval gate.
+
 ## [1.1.16] — 2026-08-31
 
 ### Added

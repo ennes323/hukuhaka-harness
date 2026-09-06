@@ -1,6 +1,6 @@
 ---
 name: engineering-plan
-description: Use automatically for non-trivial implementation planning involving multiple files, layers, or coordinated workstreams, public APIs, CLIs, schemas, migrations, risky refactors, or multi-step verification, even when the user asks to implement rather than explicitly asks for a plan. Also use for explicit engineering planning and plan-mode requests. Do not use for routine local edits, visual-document planning, or hukuhaka-codex plan/full workflows.
+description: Plan non-trivial implementation involving multiple layers, public APIs, CLIs, schemas, migrations, risky refactors, or coordinated verification. Use automatically as a planning phase within implementation requests, and for explicit engineering planning or Plan mode. Do not use for routine local edits, visual-document planning, or hukuhaka-codex plan/full workflows.
 ---
 
 # Engineering Plan Protocol
@@ -8,15 +8,29 @@ description: Use automatically for non-trivial implementation planning involving
 Produce a repository-grounded, decision-complete plan that another engineer or
 agent can execute without making hidden product or implementation decisions.
 
-Planning is read-only. Do not edit implementation files, generate tracked
-artifacts, stage changes, commit, push, or perform lifecycle mutations while
-using this skill.
+## Planning phase boundary
+
+This skill governs the planning phase, not the entire user task. Planning is
+read-only: do not modify workspace files, generate artifacts there, or perform
+Git or lifecycle mutations during this phase.
+
+For an explicit planning-only request or host Plan mode, return the plan without
+implementation. Within an authorized implementation request, once the plan is
+sufficient and applicable approval gates are satisfied, exit this skill and
+continue implementation and required verification. A plan is not completion of
+an implementation request.
+
+Disclose routine implementation assumptions without blocking work. Pause for
+unresolved decisions that materially change requested behavior, scope,
+compatibility, or operational effects. Follow the user's latest scope and
+applicable authorization rules; this skill grants no additional permissions.
 
 ## 1. Ground the plan
 
 - Read every applicable repository instruction before planning.
-- Inspect the current implementation, adjacent tests, generated sources,
-  documentation, and verified repository commands.
+- Inspect the implementation, tests, generated sources, documentation, and
+  repository commands that can affect the requested outcome. Further inspection
+  must resolve a concrete question that can change the plan or its correctness.
 - Inspect Git state and branch ancestry when worktree safety or multi-branch
   execution matters.
 - Prefer discovered facts over questions. Ask only about product choices or
@@ -145,12 +159,20 @@ the same contract in the impact surface and every slice. Include:
 - verification evidence;
 - assumptions and blockers.
 
-End with one status:
+Close the planning phase with one status:
 
 - **Ready** — no unresolved contract or implementation decision remains.
-- **Ready with assumptions** — disclosed defaults remain but do not block work;
-  use this whenever an Assumed choice materially shapes an exact delta.
-- **Blocked** — implementation would require an unresolved decision.
+- **Ready with assumptions** — only disclosed routine implementation defaults
+  remain; no unapproved material behavior, scope, compatibility, or operational
+  decision is hidden in an assumption.
+- **Blocked** — implementation requires such an unresolved material decision
+  or an unmet required gate.
+
+For an implementation request, `Ready` and `Ready with assumptions` lead back
+to the authorized implementation workflow when applicable gates are satisfied.
+Only a material unresolved decision blocks dependent work; routine disclosed
+assumptions do not create a new approval gate. Keep the plan and handoff
+proportional to the task rather than repeating every planning section.
 
 Do not mark the plan Ready when requirements are mathematically or behaviorally
 incompatible, public failure semantics are missing, referenced repository facts

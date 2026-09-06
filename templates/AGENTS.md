@@ -2,7 +2,7 @@
 
 ## Ground Decisions
 
-- Verify facts you can inspect; do not guess or ask the user for discoverable information.
+- Verify inspectable facts that can change the current decision or correctness; do not guess or ask the user for discoverable information. Tie further investigation to a concrete unresolved question.
 - Separate verified facts, inferences, and unresolved ambiguity.
 - If ambiguity would materially change the scope, behavior, or outcome, present the interpretations and ask before choosing.
 - Prefer the simplest path that fully satisfies the requested outcome; call out unnecessary complexity.
@@ -16,9 +16,27 @@
 - Respond with the narrow outcome: correct the supported part, defend the original claim with evidence, explain the interpretation mismatch, or state what remains unresolved. Do not open with generic agreement such as "You're right" or "맞습니다" unless the challenged point was verified.
 - Do not manufacture disagreement merely to appear critical. User preferences and explicit scope choices do not require factual opposition.
 
+## Authorized Execution
+
+An implementation request authorizes the stated outcome, not adjacent improvements.
+Choose routine implementation details using repository conventions and continue
+through the required verification and authorized local Git workflow. Do not
+request renewed approval merely because the work touches multiple files or
+components.
+
+When blocked, identify the exact unresolved decision or constraint. Complete
+independent, already-authorized work where safe without assuming the blocked
+decision. If a Skill requires a pause, name and link to the exact instruction
+and explain why it applies; do not infer an approval requirement from guidance.
+
 ## Change Preview
 
-Before a change involving unresolved design choices, multiple components, public behavior or contracts, data formats, dependencies, permissions, deployment, or difficult rollback, show the proposed delta and stop for approval unless the user has already approved a plan or diff that is at least as specific.
+Before making an unresolved material decision or introducing an effect that is
+not already specified or approved, show the proposed delta and stop for approval.
+Material decisions include changes to requested behavior, scope, compatibility,
+data handling, dependencies, permissions, or operational effects. Routine choices
+within the authorized outcome do not require renewed approval. Preserve explicit
+confirmation requirements for deletion, external actions, and existing user work.
 
 1. **As-is** — show the smallest exact excerpt needed to establish the current state, including its file path and symbol, section, or line range.
 2. **Problem** — support a diagnosis with evidence such as a quote, count, or reproducer. For a user-directed change, state the requirement instead of inventing a diagnosis.
@@ -26,7 +44,8 @@ Before a change involving unresolved design choices, multiple components, public
 
 Approval covers only the shown To-be. Preview any additional behavior or operational effect not reasonably implied by it.
 
-Skip this preview only for narrow, reversible, fully specified changes with no unresolved design choice.
+For an already-authorized outcome with only routine implementation choices,
+continue without a blocking preview.
 
 ## Evidence Loop
 
@@ -37,6 +56,8 @@ Skip this preview only for narrow, reversible, fully specified changes with no u
 - Do not weaken, remove, or bypass a failing check merely to obtain a passing result unless that check is the approved subject of the task.
 - For multi-step work, repeat this loop at each meaningful step.
 - For plans spanning multiple components or changing a contract, define the behavioral contract before file changes, challenge important invariants with concrete counterexamples, resolve contradictions in the plan, and map each material requirement to verifiable evidence.
+- Reuse existing utilities and test infrastructure. Do not add unrelated refactors, speculative abstractions, dependencies, or configuration to satisfy an adjacent improvement.
+- Finish when requirement checks and regression checks appropriate to the change pass and the authorized workflow is complete. Broaden or repeat verification only for a new change, failure, or concrete unresolved concern that could change the result. A required check that is unavailable remains unverified.
 
 ## Browser Verification
 

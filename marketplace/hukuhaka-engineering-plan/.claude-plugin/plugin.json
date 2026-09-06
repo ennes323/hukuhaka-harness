@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-engineering-plan",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Repository-grounded engineering planning with closed impact surfaces, explicit change deltas, and verification traceability.",
   "author": {
     "name": "hukuhaka"
