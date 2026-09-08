@@ -24,13 +24,24 @@ from .common import (
 
 Key = Tuple[str, ...]
 
+SUBAGENT_SETTINGS = {
+    ("features", "multi_agent"): "false",
+}  # type: Dict[Key, str]
+
+AGENT_WAIT_SETTINGS = {
+    ("features", "multi_agent_v2", "min_wait_timeout_ms"): "120000",
+    ("features", "multi_agent_v2", "default_wait_timeout_ms"): "120000",
+}  # type: Dict[Key, str]
+
+
 RECOMMENDED_SETTINGS = {
+    **AGENT_WAIT_SETTINGS,
+    **SUBAGENT_SETTINGS,
     ("personality",): '"pragmatic"',
     ("model_reasoning_effort",): '"medium"',
     ("model_reasoning_summary",): '"concise"',
     ("model_verbosity",): '"low"',
     ("agents", "enabled"): "true",
-    ("features", "multi_agent"): "true",
     (
         "tui",
         "status_line",
@@ -41,10 +52,9 @@ RECOMMENDED_SETTINGS = {
     ("features", "prevent_idle_sleep"): "true",
 }  # type: Dict[Key, str]
 
-# Installing the named evidence scout must make that component runnable without
-# also changing the user's primary model or the defaults for unrelated agents.
+# Preserve optional role files without re-enabling subagent execution.
 EVIDENCE_SCOUT_SETTINGS = {
-    ("features", "multi_agent"): "true",
+    **SUBAGENT_SETTINGS,
     ("agents", "enabled"): "true",
 }  # type: Dict[Key, str]
 
@@ -56,6 +66,12 @@ AGENT_POLICY_KEYS = (
     ("agents", "max_depth"),
 )
 AGENT_POLICY_MANIFEST = ".hukuhaka-agent-policy.json"
+
+# Explicit one-shot migration, never part of ordinary install or capacity policy.
+SUBAGENT_MODEL_KEYS = (
+    ("agents", "default_subagent_model"),
+    ("agents", "default_subagent_reasoning_effort"),
+)
 
 # Legacy Evidence Scout installs owned this top-level key. Keep it in the
 # managed set only so schema-v2 manifests can remove their exact pointer.
@@ -108,15 +124,35 @@ def _resolved_managed_keys(managed_keys: Optional[Sequence[Key]]) -> set[Key]:
 
 
 def _canonical_key_text(assignment: "_Assignment", key: Key) -> str:
-    if assignment.key_text == assignment.path[-1]:
+    if assignment.path == key:
+        return assignment.key_text
+    if len(_key_parts(assignment.key_text)) == 1:
         return key[-1]
     return ".".join(key)
 
 
-_SECTION_RE = re.compile(r"^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$")
+_KEY_SEGMENT = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')"""
+_KEY_PATH = _KEY_SEGMENT + r"(?:\s*\.\s*" + _KEY_SEGMENT + r")*"
+_SECTION_RE = re.compile(r"^\s*\[(" + _KEY_PATH + r")\]\s*(?:#.*)?$")
 _ASSIGNMENT_RE = re.compile(
-    r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*="
+    r"^(?P<indent>\s*)(?P<key>" + _KEY_PATH + r")\s*="
 )
+
+
+def _key_parts(text: str) -> Key:
+    parts = []
+    for match in re.finditer(_KEY_SEGMENT, text):
+        token = match.group()
+        if token.startswith('"'):
+            try:
+                token = json.loads(token)
+            except ValueError as exc:
+                raise StateError("unsupported quoted TOML key escape",
+                                 operation="parse-config") from exc
+        elif token.startswith("'"):
+            token = token[1:-1]
+        parts.append(token)
+    return tuple(parts)
 
 
 @dataclass(frozen=True)
@@ -213,8 +249,22 @@ def _without_comment(line: str) -> str:
     return line[:offset] if offset >= 0 else line
 
 
-def _assignment_value(lines: Sequence[str], start: int) -> Tuple[int, str]:
-    first = lines[start].split("=", 1)[1]
+def _assignment_value(lines: Sequence[str], start: int, value_offset: int) -> Tuple[int, str]:
+    first = lines[start][value_offset:]
+    delimiter = first.lstrip()[:3]
+    if delimiter in ('"""', "'''"):
+        remainder = first.lstrip()[3:]
+        end = start
+        while True:
+            for match in re.finditer(re.escape(delimiter), remainder):
+                prefix = remainder[:match.start()]
+                slashes = len(prefix) - len(prefix.rstrip("\\"))
+                if delimiter == "'''" or slashes % 2 == 0:
+                    return end + 1, (first + "".join(lines[start + 1:end + 1])).strip()
+            end += 1
+            if end >= len(lines):
+                raise StateError("unterminated TOML string", operation="parse-config")
+            remainder = lines[end]
     values = [_without_comment(first)]
     depth = _balance(first)
     end = start + 1
@@ -241,12 +291,12 @@ def _parse_assignments(text: str) -> Tuple[List[str], List[_Assignment], Dict[Ke
     while index < len(lines):
         stripped = lines[index].strip()
         if stripped.startswith("[["):
-            section = ()
+            section = ("<array-table>",)
             index += 1
             continue
         section_match = _SECTION_RE.match(lines[index])
         if section_match:
-            section = tuple(section_match.group(1).split("."))
+            section = _key_parts(section_match.group(1))
             sections.setdefault(section, index)
             index += 1
             continue
@@ -256,16 +306,16 @@ def _parse_assignments(text: str) -> Tuple[List[str], List[_Assignment], Dict[Ke
             # managed surface, but they still end the preceding table. Do not
             # misclassify their assignments as members of [agents] or another
             # supported section.
-            section = ()
+            section = ("<unsupported-table>",)
             index += 1
             continue
         match = _ASSIGNMENT_RE.match(lines[index])
         if not match:
             index += 1
             continue
-        key_parts = tuple(match.group("key").split("."))
+        key_parts = _key_parts(match.group("key"))
         path = section + key_parts
-        end, value = _assignment_value(lines, index)
+        end, value = _assignment_value(lines, index, match.end())
         assignments.append(
             _Assignment(
                 path=path,
@@ -953,6 +1003,85 @@ class CodexConfigEditor:
         self._doctor()
 
 
+class CodexSubagentModel:
+    """Inspect model pins and explicitly remove only global child overrides."""
+
+    def __init__(self, codex_home: Path, *, dry_run: bool = False) -> None:
+        self.codex_home = codex_home.expanduser()
+        self.dry_run = dry_run
+        self.config = CodexConfigEditor(
+            self.codex_home, dry_run=dry_run,
+            managed_keys=SUBAGENT_MODEL_KEYS, stage="agents-model",
+        )
+
+    def inspect(self) -> dict:
+        parent_keys = (("model",), ("model_reasoning_effort",))
+        original, _, _ = self.config._read()
+        settings = current_values(
+            original.decode("utf-8"),
+            managed_keys=(*parent_keys, *SUBAGENT_MODEL_KEYS),
+            stage="agents-model",
+        )
+        roles = {}
+        directory = self.codex_home / "agents"
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise StateError("agent directory must be a regular directory", stage="agents-model")
+        for path in sorted(directory.glob("*.toml")):
+            if path.is_symlink() or not path.is_file():
+                raise StateError("agent config must be a regular file",
+                                 stage="agents-model", path=str(path))
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise StateError("agent config must be UTF-8", stage="agents-model",
+                                 path=str(path)) from exc
+            pins = current_values(text,
+                                  managed_keys=parent_keys, stage="agents-model")
+            roles[path.stem] = {".".join(key): value for key, value in pins.items()}
+        return {
+            "parent": {".".join(key): settings.get(key) for key in parent_keys},
+            "global_child_overrides": {
+                ".".join(key): settings.get(key) for key in SUBAGENT_MODEL_KEYS
+            },
+            "role_file_pins": roles,
+            "runtime": "Not observed. Invocation overrides, profiles, and role pins may affect selection; verify child execution records.",
+        }
+
+    def plan_inherit(self) -> ConfigPlan:
+        return self.config.plan({}, remove=SUBAGENT_MODEL_KEYS)
+
+    def apply(self, plan: ConfigPlan) -> bool:
+        if self.dry_run:
+            print("Codex child model dry run complete. No files were modified.")
+            return False
+        if not plan.changed and not any(
+            (self.codex_home / ".hukuhaka-transactions").glob("*/journal.json")
+        ):
+            if self.plan_inherit() != plan:
+                raise StateError("Codex config changed after the diff was prepared; review it again",
+                                 stage="agents-model", operation="verify-precondition")
+            print("Codex child model: no global overrides to remove.")
+            return False
+        with installer_state(self.codex_home, dry_run=False) as writable:
+            if self.plan_inherit() != plan:
+                raise StateError(
+                    "Codex config changed after the diff was prepared; review it again",
+                    stage="agents-model", operation="verify-precondition",
+                )
+            if not plan.changed:
+                print("Codex child model: no global overrides to remove.")
+                return False
+            assert writable
+            with FileTransaction(self.codex_home) as transaction:
+                if plan.existed:
+                    transaction.write_bytes(self.config.backup, plan.original, plan.mode)
+                transaction.write_bytes(self.config.path, plan.proposed, plan.mode)
+                self.config.verify(plan)
+                transaction.commit()
+        print("  [ok] removed only global child model and effort overrides")
+        return True
+
+
 @dataclass(frozen=True)
 class AgentPolicyPlan:
     action: str
@@ -1045,7 +1174,7 @@ class CodexAgentPolicy:
         return (
             isinstance(payload, dict)
             and payload.get("component") == "evidence-scout"
-            and payload.get("schemaVersion") in (2, 3)
+            and payload.get("schemaVersion") in (2, 3, 4)
         )
 
     @staticmethod

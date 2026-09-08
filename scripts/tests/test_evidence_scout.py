@@ -16,7 +16,6 @@ from scripts.install.codex import (
     EVIDENCE_SCOUT_MANIFEST,
     CodexEvidenceScoutDeployment,
     CodexInstaller,
-    _scout_block,
 )
 from scripts.install.codex_config import (
     EVIDENCE_SCOUT_SETTINGS,
@@ -34,8 +33,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="hukuhaka evidence scout ")
         self.codex_home = Path(self.temp.name) / ".codex"
-        self.source = ROOT / "agents" / "evidence-scout.toml"
-        self.routing = ROOT / "templates" / "evidence-scout-routing.md"
+        self.source = ROOT / "scripts/tests/fixtures/archived-agents/evidence-scout.toml"
         self.codex_home.mkdir(parents=True)
 
     def tearDown(self) -> None:
@@ -44,7 +42,6 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
     def deployment(self, *, force: bool = False) -> CodexEvidenceScoutDeployment:
         return CodexEvidenceScoutDeployment(
             self.source,
-            self.routing,
             self.codex_home,
             "1.2.3",
             enabled=True,
@@ -60,7 +57,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         agent = self.codex_home / "agents" / "evidence-scout.toml"
         agent.parent.mkdir(parents=True, exist_ok=True)
         agent.write_bytes(self.source.read_bytes())
-        block = _scout_block(self.routing.read_bytes())
+        block = b"<!-- hukuhaka-evidence-scout:begin -->\nLegacy dynamic routing.\n<!-- hukuhaka-evidence-scout:end -->"
         (self.codex_home / "AGENTS.md").write_bytes(block + b"\n")
         if catalog:
             (self.codex_home / "models-luna-v2.json").write_bytes(catalog)
@@ -95,7 +92,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
     def test_install_is_complete_and_idempotent(self) -> None:
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             self.deployment().deploy()
-            first_agents = (self.codex_home / "AGENTS.md").read_bytes()
+            self.assertFalse((self.codex_home / "AGENTS.md").exists())
             first_manifest = (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_bytes()
             self.deployment().deploy()
 
@@ -103,7 +100,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
             self.source.read_bytes(),
             (self.codex_home / "agents" / "evidence-scout.toml").read_bytes(),
         )
-        self.assertEqual(first_agents, (self.codex_home / "AGENTS.md").read_bytes())
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
         self.assertEqual(
             first_manifest,
             (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_bytes(),
@@ -117,7 +114,8 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         manifest = json.loads(
             (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
         )
-        self.assertEqual(3, manifest["schemaVersion"])
+        self.assertEqual(4, manifest["schemaVersion"])
+        self.assertNotIn("routingHash", manifest)
         self.assertNotIn("catalogTarget", manifest)
 
     def test_fresh_install_does_not_require_or_create_model_catalog(self) -> None:
@@ -169,7 +167,8 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         manifest = json.loads(
             (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
         )
-        self.assertEqual(3, manifest["schemaVersion"])
+        self.assertEqual(4, manifest["schemaVersion"])
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
 
     def test_legacy_v2_migration_preserves_foreign_catalog_pointer(self) -> None:
         self.seed_legacy_v2(pointer='"/user/catalog.json"')
@@ -183,7 +182,20 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
             (self.codex_home / "config.toml").read_text(encoding="utf-8"),
         )
 
-    def test_override_warns_without_changing_override(self) -> None:
+    def test_legacy_v3_removes_routing_without_requiring_catalog(self) -> None:
+        self.seed_legacy_v2(catalog=b"")
+        path = self.codex_home / EVIDENCE_SCOUT_MANIFEST
+        manifest = json.loads(path.read_text())
+        manifest = {key: value for key, value in manifest.items() if not key.startswith("catalog")}
+        manifest["schemaVersion"] = 3
+        path.write_text(json.dumps(manifest))
+        (self.codex_home / "config.toml").write_text("[features]\nmulti_agent = true\n")
+        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            self.deployment().deploy()
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
+        self.assertEqual(4, json.loads(path.read_text())["schemaVersion"])
+
+    def test_agent_install_leaves_override_unchanged_without_warning(self) -> None:
         override = self.codex_home / "AGENTS.override.md"
         override.write_text("# User override\n", encoding="utf-8")
         stderr = io.StringIO()
@@ -193,8 +205,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         ):
             self.deployment().deploy()
 
-        self.assertIn("shadows global AGENTS.md", stderr.getvalue())
-        self.assertIn("routing is inactive", stderr.getvalue())
+        self.assertEqual("", stderr.getvalue())
         self.assertEqual("# User override\n", override.read_text(encoding="utf-8"))
 
     def test_legacy_catalog_drift_requires_force_and_force_removes_it(self) -> None:
@@ -249,8 +260,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
 
     def test_force_repairs_managed_agent_and_routing_drift(self) -> None:
-        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
-            self.deployment().deploy()
+        self.seed_legacy_v2()
         target = self.codex_home / "agents" / "evidence-scout.toml"
         target.write_text("changed\n", encoding="utf-8")
         agents = self.codex_home / "AGENTS.md"
@@ -262,7 +272,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
             self.deployment(force=True).deploy()
 
         self.assertEqual(self.source.read_bytes(), target.read_bytes())
-        self.assertIn(self.routing.read_bytes().rstrip(), agents.read_bytes())
+        self.assertFalse(agents.exists())
 
     def test_validation_failure_rolls_back_agent_routing_and_config(self) -> None:
         self.codex_home.mkdir(parents=True, exist_ok=True)
@@ -297,7 +307,6 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
 
         CodexEvidenceScoutDeployment(
             self.source,
-            self.routing,
             self.codex_home,
             "1.2.3",
             enabled=False,
@@ -316,7 +325,6 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             CodexEvidenceScoutDeployment(
                 self.source,
-                self.routing,
                 self.codex_home,
                 "1.2.3",
                 enabled=False,
@@ -335,7 +343,6 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
 
         deployment = CodexEvidenceScoutDeployment(
             self.source,
-            self.routing,
             self.codex_home,
             "1.2.3",
             enabled=False,
@@ -366,12 +373,18 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
         with mock.patch("scripts.install.codex.shutil.which", return_value="/fake/codex"), mock.patch(
             "scripts.install.codex.run_json", return_value={"installed": []}
         ), mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
-            installer.install(["evidence-scout"])
+            self.seed_archived_scout()
             self.assertEqual({"evidence-scout"}, installer.current_components())
             installer.uninstall()
             self.assertEqual(set(), installer.current_components())
 
-    def test_reset_reinstalls_scout_without_model_catalog(self) -> None:
+    def seed_archived_scout(self) -> None:
+        CodexEvidenceScoutDeployment(
+            ROOT / "scripts/tests/fixtures/archived-agents/evidence-scout.toml",
+            self.codex_home, "1.2.3", enabled=True,
+        ).deploy()
+
+    def test_reset_replaces_archived_scout_with_worker_without_model_catalog(self) -> None:
         installer = CodexInstaller(ROOT, self.catalog, "1.2.3", local_source=True)
         with mock.patch(
             "scripts.install.codex.shutil.which", return_value="/fake/codex"
@@ -380,15 +393,48 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
         ), mock.patch(
             "scripts.install.codex_config.CodexConfigEditor._doctor"
         ):
-            installer.install(["evidence-scout"])
+            self.seed_archived_scout()
             configured = (self.codex_home / "config.toml").read_bytes()
-            installer.install(["evidence-scout"], reset=True)
+            installer.install(["astra_worker"], reset=True)
 
-        self.assertTrue((self.codex_home / "agents" / "evidence-scout.toml").is_file())
-        self.assertTrue((self.codex_home / EVIDENCE_SCOUT_MANIFEST).is_file())
+        self.assertTrue((self.codex_home / "agents" / "astra_worker.toml").is_file())
+        self.assertFalse((self.codex_home / "agents" / "evidence-scout.toml").exists())
+        self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
         self.assertFalse((self.codex_home / "models_cache.json").exists())
         self.assertFalse((self.codex_home / "models-luna-v2.json").exists())
         self.assertEqual(configured, (self.codex_home / "config.toml").read_bytes())
+
+    def test_active_scout_installs_and_reinstalls_from_catalog_source(self) -> None:
+        installer = CodexInstaller(ROOT, self.catalog, "1.2.3", local_source=True)
+        with mock.patch("scripts.install.codex.shutil.which", return_value="/fake/codex"), mock.patch(
+            "scripts.install.codex.run_json", return_value={"installed": []}
+        ), mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            installer.install(["evidence-scout"])
+            first = (self.codex_home / "agents/evidence-scout.toml").read_bytes()
+            installer.install(["evidence-scout"])
+
+        self.assertEqual((ROOT / "agents/evidence-scout.toml").read_bytes(), first)
+        self.assertEqual(first, (self.codex_home / "agents/evidence-scout.toml").read_bytes())
+        manifest = json.loads(
+            (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
+        )
+        self.assertEqual(4, manifest.get("schemaVersion"))
+        self.assertFalse(any(key.startswith("routing") for key in manifest))
+
+    def test_replacement_preserves_modified_scout_as_conflict(self) -> None:
+        installer = CodexInstaller(ROOT, self.catalog, "1.2.3", local_source=True)
+        with mock.patch("scripts.install.codex.shutil.which", return_value="/fake/codex"), mock.patch(
+            "scripts.install.codex.run_json", return_value={"installed": []}
+        ), mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            self.seed_archived_scout()
+            scout = self.codex_home / "agents/evidence-scout.toml"
+            changed = scout.read_bytes() + b"\n# user change\n"
+            scout.write_bytes(changed)
+            with self.assertRaisesRegex(DriftError, "managed evidence-scout"):
+                installer.install(["astra_worker", "result-runner"])
+            self.assertEqual(changed, scout.read_bytes())
+            self.assertTrue((self.codex_home / EVIDENCE_SCOUT_MANIFEST).is_file())
+            self.assertTrue((self.codex_home / "agents/astra_worker.toml").is_file())
 
     def test_interactive_row_names_the_runtime_contract(self) -> None:
         output = io.StringIO()
@@ -402,14 +448,14 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
                     "version": "0.147.0",
                     "components": [
                         {
-                            "name": "evidence-scout",
+                            "name": "astra_worker",
                             "kind": "agent",
-                            "description": "Luna max read-only evidence scout with dynamic routing",
-                            "default": True,
+                            "description": "Astra low bounded implementation and review",
+                            "default": False,
                             "lifecycle": "supported",
                         }
                     ],
-                    "selected": {"evidence-scout"},
+                    "selected": {"astra_worker"},
                 }
             ],
             keys=["exit"],
@@ -417,9 +463,8 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
 
         self.assertEqual([], plans)
         rendered = output.getvalue()
-        self.assertIn("[x] evidence-scout", rendered)
-        self.assertIn("agent: Luna max read-only evidence scout with dynamic routing", rendered)
-        self.assertNotIn("optional", rendered)
+        self.assertIn("[x] astra_worker", rendered)
+        self.assertIn("agent: Astra low bounded implementation and review", rendered)
 
 
 if __name__ == "__main__":

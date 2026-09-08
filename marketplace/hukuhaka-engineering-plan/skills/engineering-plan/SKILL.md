@@ -1,6 +1,6 @@
 ---
 name: engineering-plan
-description: Plan non-trivial implementation involving multiple layers, public APIs, CLIs, schemas, migrations, risky refactors, or coordinated verification. Use automatically as a planning phase within implementation requests, and for explicit engineering planning or Plan mode. Do not use for routine local edits, visual-document planning, or hukuhaka-codex plan/full workflows.
+description: Plan engineering work when contracts, cross-component dependencies, migrations, or material uncertainty require coordinated decisions before implementation. Use for explicit engineering planning and plan-mode requests; during implementation, plan the necessary scope then return to execution. Skip routine changes with an established path and visual-document planning.
 ---
 
 # Engineering Plan Protocol
@@ -8,22 +8,24 @@ description: Plan non-trivial implementation involving multiple layers, public A
 Produce a repository-grounded, decision-complete plan that another engineer or
 agent can execute without making hidden product or implementation decisions.
 
-## Planning phase boundary
+## Request mode and ownership
 
-This skill governs the planning phase, not the entire user task. Planning is
-read-only: do not modify workspace files, generate artifacts there, or perform
-Git or lifecycle mutations during this phase.
+For an explicit planning-only request or host Plan mode, planning is read-only:
+do not edit implementation files, generate tracked artifacts, or mutate Git or
+lifecycle state. End with the plan.
 
-For an explicit planning-only request or host Plan mode, return the plan without
-implementation. Within an authorized implementation request, once the plan is
-sufficient and applicable approval gates are satisfied, exit this skill and
-continue implementation and required verification. A plan is not completion of
-an implementation request.
+For an implementation request, use this protocol as a bounded planning phase.
+Keep this phase read-only: do not modify workspace files, generate artifacts
+there, or mutate Git or lifecycle state until returning to implementation.
+Once material decisions are resolved, return to the authorized implementation
+and verification workflow. Do not stop merely because the plan is complete or
+ask again about already-authorized work. Pause only for a material unresolved
+decision or a gate that the user or repository explicitly reserves.
 
-Disclose routine implementation assumptions without blocking work. Pause for
-unresolved decisions that materially change requested behavior, scope,
-compatibility, or operational effects. Follow the user's latest scope and
-applicable authorization rules; this skill grants no additional permissions.
+The parent owns requirements, material scope and authority decisions, allocation,
+and final acceptance. Children may investigate, choose implementation details,
+edit assigned files, and verify their scope. Plan dependencies and file ownership
+before parallel execution; reserve Git and external actions for the parent.
 
 ## 1. Ground the plan
 
@@ -134,7 +136,8 @@ bury its contradiction in a risk list.
 
 Map every material requirement to evidence:
 
-- test level and fixture or scenario;
+- existing evidence or the smallest necessary test or inspection;
+- relevant input identity and the point in execution when evidence is needed;
 - exact expected result;
 - verified repository command;
 - manual or runtime check when automation cannot prove it.
@@ -143,10 +146,17 @@ Include before/after evidence for read-only or state-preservation guarantees.
 Distinguish unit, contract, integration, generation-drift, build, and live-host
 checks instead of treating one passing suite as universal proof.
 
+Do not require a new test for every requirement. Reuse valid evidence while its
+relevant source, inputs, generated outputs, configuration, and environment are
+unchanged. Rerun for a relevant change, failure, or named unresolved concern.
+Assign verification to the scope owner and specify the parent's acceptance
+check without duplicating completed checks. Required rendered, live-host, and
+human evidence retain their own gates; unavailable evidence stays unverified.
+
 ## 7. Publish the revised plan
 
-Use the host's native plan envelope and interaction rules. Do not impose a
-Claude- or Codex-specific wrapper from this skill.
+Use Codex's native plan envelope and interaction rules. Do not impose a
+plugin-specific wrapper from this skill.
 
 Keep the output proportional: summarize repeated evidence instead of restating
 the same contract in the impact surface and every slice. Include:
@@ -159,7 +169,8 @@ the same contract in the impact surface and every slice. Include:
 - verification evidence;
 - assumptions and blockers.
 
-Close the planning phase with one status:
+For planning-only requests, end with one status. For implementation requests,
+record this status at the planning boundary and continue when ready:
 
 - **Ready** — no unresolved contract or implementation decision remains.
 - **Ready with assumptions** — only disclosed routine implementation defaults
@@ -178,3 +189,7 @@ Do not mark the plan Ready when requirements are mathematically or behaviorally
 incompatible, public failure semantics are missing, referenced repository facts
 were not verified, the impact surface is not closed, or the implementer would
 still need to choose the behavior.
+
+Plan readiness is not implementation completion. Close the implementation only
+after the requested behavior, required evidence, and authorized workflow are
+complete; preserve partial and failed outcomes from every child receipt.

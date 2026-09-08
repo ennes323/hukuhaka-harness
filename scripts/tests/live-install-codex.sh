@@ -174,7 +174,24 @@ if [ -z "$SOURCE_DIR" ]; then
 fi
 grep -Eq "  Codex: +success" <<<"$first_output"
 grep -Eq "  Codex: +success" <<<"$second_output"
-grep -Fq "multi-agent enabled" <<<"$second_output"
+if grep -Fq "install astra_worker" <<<"$second_output" || \
+   grep -Fq "install result-runner" <<<"$second_output" || \
+   grep -Fq "install evidence-scout" <<<"$second_output"; then
+    echo "recommended selection installed an optional specialist" >&2
+    exit 1
+fi
+
+if [ -n "$SOURCE_DIR" ]; then
+    optional_output=$(/bin/bash "$SOURCE_ROOT/scripts/install.sh" \
+        --source-dir "$SOURCE_ROOT" --version "$EXPECTED_VERSION" \
+        codex install --components agents-md,astra_worker,result-runner,evidence-scout --yes 2>&1)
+else
+    optional_output=$(curl -fsSL "$INSTALL_URL" | /bin/bash -s -- \
+        --version "$EXPECTED_VERSION" codex install \
+        --components agents-md,astra_worker,result-runner,evidence-scout --yes 2>&1)
+fi
+printf '%s\n' "$optional_output"
+grep -Fq "multi-agent enabled" <<<"$optional_output"
 
 python3 - "$CODEX_HOME" "$SMOKE_ROOT/source-models-cache.json" "$EXPECTED_VERSION" <<'PY'
 import json
@@ -186,34 +203,57 @@ root = pathlib.Path(sys.argv[1])
 source_cache = pathlib.Path(sys.argv[2])
 version = sys.argv[3]
 
-agent = root / "agents" / "evidence-scout.toml"
+agent = root / "agents" / "astra_worker.toml"
 routing = root / "AGENTS.md"
-manifest_path = root / ".hukuhaka-evidence-scout-manifest.json"
+manifest_path = root / ".hukuhaka-astra_worker-manifest.json"
 config_path = root / "config.toml"
 
 for path in (agent, routing, manifest_path, config_path):
     if not path.is_file():
-        raise SystemExit("missing installed Evidence Scout artifact: {}".format(path))
+        raise SystemExit("missing installed Astra Worker artifact: {}".format(path))
+runner = root / "agents" / "result-runner.toml"
+if not runner.is_file() or not (root / ".hukuhaka-result-runner-manifest.json").is_file():
+    raise SystemExit("missing installed Result Runner artifacts")
+scout = root / "agents" / "evidence-scout.toml"
+if not scout.is_file() or not (root / ".hukuhaka-evidence-scout-manifest.json").is_file():
+    raise SystemExit("missing installed Evidence Scout artifacts")
+for path, model, effort in (
+    (agent, "gpt-5.6-sol", "medium"),
+    (runner, "gpt-5.6-luna", "xhigh"),
+    (scout, "gpt-5.6-luna", "xhigh"),
+):
+    text = path.read_text()
+    if 'model = "{}"'.format(model) not in text or 'model_reasoning_effort = "{}"'.format(effort) not in text:
+        raise SystemExit("agent model/effort pin differs: {}".format(path))
+if 'sandbox_mode = "read-only"' not in scout.read_text():
+    raise SystemExit("Evidence Scout is not read-only")
 if (root / "models-luna-v2.json").exists():
     raise SystemExit("obsolete Luna v2 model catalog was installed")
 
 if (root / "models_cache.json").read_bytes() != source_cache.read_bytes():
     raise SystemExit("models_cache.json changed")
 
-manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("version") != version:
-    raise SystemExit("manifest version {!r} != {!r}".format(manifest.get("version"), version))
-if manifest.get("schemaVersion") != 3:
-    raise SystemExit("Evidence Scout manifest is not schema v3")
-if any(key.startswith("catalog") for key in manifest):
-    raise SystemExit("Evidence Scout manifest still owns a model catalog")
+for name in ("astra_worker", "result-runner", "evidence-scout"):
+    current_manifest = json.loads(
+        (root / ".hukuhaka-{}-manifest.json".format(name)).read_text(encoding="utf-8")
+    )
+    if current_manifest.get("version") != version:
+        raise SystemExit(
+            "{} manifest version {!r} != {!r}".format(
+                name, current_manifest.get("version"), version
+            )
+        )
+    if current_manifest.get("schemaVersion") != 4:
+        raise SystemExit("{} manifest is not schema v4".format(name))
+    if any(key.startswith("catalog") or key.startswith("routing") for key in current_manifest):
+        raise SystemExit("{} manifest still owns a model catalog or routing".format(name))
 
 routing_text = routing.read_text(encoding="utf-8")
-if routing_text.count("<!-- hukuhaka-evidence-scout:begin -->") != 1 or routing_text.count("<!-- hukuhaka-evidence-scout:end -->") != 1:
-    raise SystemExit("Evidence Scout routing marker count differs")
-
+if any("<!-- hukuhaka-{}:".format(name) in routing_text
+       for name in ("astra_worker", "evidence-scout", "result-runner", "project-doc-reader")):
+    raise SystemExit("agent installation injected obsolete routing")
 config = config_path.read_text(encoding="utf-8")
-for expected_line in ("multi_agent = true",):
+for expected_line in ("multi_agent = false",):
     if expected_line not in config:
         raise SystemExit("missing config setting: {}".format(expected_line))
 if "model_catalog_json" in config:
@@ -230,4 +270,4 @@ if "max_threads = 4 # legacy alias" not in backup:
     raise SystemExit("legacy pre-migration config was not backed up")
 PY
 
-printf 'Codex Evidence Scout live install verified for v%s\n' "$EXPECTED_VERSION"
+printf 'Codex Worker, Runner, and Scout live install verified for v%s\n' "$EXPECTED_VERSION"

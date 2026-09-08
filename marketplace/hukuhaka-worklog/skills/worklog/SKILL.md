@@ -13,7 +13,7 @@ When both Worklog files exist, read `work.md` before changing project files for 
 
 ## Manage lifecycle
 
-1. If the user explicitly asks to record or change Worklog state and either file is missing, stop and ask them to invoke the exact host command: `/hukuhaka-worklog:worklog setup` in Claude Code or `$hukuhaka-worklog:worklog setup` in Codex. For automatic use, missing files do not block the underlying task: continue without creating or changing Worklog files. If a Codex setup command reached the model instead of the hook, tell the user to open `/hooks`, review and trust the worklog hook, then retry; do not emulate setup in the Skill.
+1. If the user explicitly asks to record or change Worklog state and either file is missing, stop and ask them to invoke `$hukuhaka-worklog:worklog setup` in Codex. For automatic use, missing files do not block the underlying task: continue without creating or changing Worklog files. If a setup command reached the model instead of the hook, tell the user to open `/hooks`, review and trust the worklog hook, then retry; do not emulate setup in the Skill.
 2. Read both files and identify an existing matching item before adding a new one. Preserve the user's language and do not invent IDs, priorities, owners, or schedules.
 3. Reread the relevant entries before writing. Uncommitted, staged, or untracked status alone must not block a lifecycle update. Preserve existing notes and unrelated entries while adding or updating the matching item; never stage, commit, stash, reset, or discard changes just to write Worklog. If the same item's meaning or user intent still conflicts with the update after considering the latest request and evidence, leave that item unchanged and report the exact conflict; independent items may still be updated. If the file changed since it was read, reread and reconcile instead of overwriting it. Report malformed records and read/write failures explicitly without claiming the affected update succeeded.
 4. Only the primary agent changes Worklog state. Delegated agents may read it for context but must not modify it.
@@ -30,6 +30,13 @@ When both Worklog files exist, read `work.md` before changing project files for 
 Ask one concise question only when different state choices would materially change the record.
 
 ## Write the files
+
+Record completion from the requested outcome and its required evidence, not
+from a finished plan, a successful build, or a child's completion message alone.
+Preserve required checks that failed or remain unverified. Reuse valid product
+verification when recording work; a Worklog edit is not a reason to repeat
+unchanged product tests. Only the primary reconciles final acceptance and writes
+lifecycle state.
 
 Keep exactly these `work.md` sections:
 

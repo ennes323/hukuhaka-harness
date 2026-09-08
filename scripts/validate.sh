@@ -3,15 +3,17 @@
 # Validation Script — run locally or from CI
 #
 # Checks:
-#   1. JSON syntax (catalog, Claude/Codex manifests, eval cases)
+#   1. JSON syntax (catalog, Codex manifests, eval cases)
 #   2. SKILL.md frontmatter (name, description required)
-#   3. Component catalog and Claude/Codex installer lifecycle
+#   3. Component catalog and Codex installer lifecycle
 #   4. Private static/runtime harnesses when present
 #   5. Exact public tree construction through release.sh when present
 #
 # Usage:
 #   scripts/validate.sh [--profile private|public]
 #   scripts/validate.sh --release vX.Y.Z
+#   scripts/validate.sh --live-cli
+# HUKUHAKA_VALIDATION_CONTRACT=2: default profiles exclude ambient live CLI tests.
 
 set -euo pipefail
 
@@ -20,7 +22,10 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$REPO_DIR"
 
 PROFILE=""
-if [ "$#" -eq 0 ]; then
+if [ "$#" -eq 1 ] && [ "$1" = "--live-cli" ]; then
+    exec env HUKUHAKA_RUN_LIVE_CLI=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+        scripts.tests.test_install_cli.InstallCliTests.test_installed_codex_cli_temp_home_lifecycle
+elif [ "$#" -eq 0 ]; then
     if [ -f "$SCRIPT_DIR/release/main.py" ] || \
        [ -f "$SCRIPT_DIR/prepush/main.py" ] || \
        [ -f "$REPO_DIR/eval/run.py" ]; then
@@ -43,9 +48,23 @@ elif [ "$#" -eq 2 ] && [ "$1" = "--release" ]; then
     fi
     exec python3 -m scripts.release.main validate "$2"
 else
-    echo "Usage: scripts/validate.sh [--profile private|public] [--release vX.Y.Z]" >&2
+    echo "Usage: scripts/validate.sh [--profile private|public] [--release vX.Y.Z] [--live-cli]" >&2
     exit 2
 fi
+
+VALIDATE_JOBS="${VALIDATE_JOBS:-2}"
+case "$VALIDATE_JOBS" in
+    1|2|3|4) ;;
+    *) echo "validate: VALIDATE_JOBS must be an integer from 1 to 4." >&2; exit 2 ;;
+esac
+export PYTHONDONTWRITEBYTECODE=1
+export HUKUHAKA_RUN_LIVE_CLI=0
+export PYTHONNOUSERSITE=1
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_NOSYSTEM=1
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+VALIDATE_START_SECONDS=$SECONDS
 
 PASSES=0
 FAILURES=0
@@ -71,21 +90,17 @@ validate_json() {
     fi
 }
 
-# plugin.json — every plugin under marketplace/
+# Codex plugin.json — every plugin under marketplace/
 found_any_plugin=0
-for plugin_json in "$REPO_DIR"/marketplace/*/.claude-plugin/plugin.json; do
+for plugin_json in "$REPO_DIR"/marketplace/*/.codex-plugin/plugin.json; do
     [ -f "$plugin_json" ] || continue
     validate_json "$plugin_json"
     found_any_plugin=1
 done
 if [ "$found_any_plugin" -eq 0 ]; then
-    fail "no marketplace/*/.claude-plugin/plugin.json found"
+    fail "no marketplace/*/.codex-plugin/plugin.json found"
 fi
 
-# Codex plugin manifests and repo marketplace
-for plugin_json in "$REPO_DIR"/marketplace/*/.codex-plugin/plugin.json; do
-    [ -f "$plugin_json" ] && validate_json "$plugin_json"
-done
 [ -f "$REPO_DIR/.agents/plugins/marketplace.json" ] && \
     validate_json "$REPO_DIR/.agents/plugins/marketplace.json"
 [ -f "$REPO_DIR/components.json" ] && validate_json "$REPO_DIR/components.json"
@@ -142,25 +157,24 @@ done
 echo ""
 echo "Host support:"
 
-if PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-    -s "$SCRIPT_DIR/tests" -p 'test_*.py' > "$VALIDATE_TMP/installer-tests.log" 2>&1; then
-    pass "transactional installer state, rollback, drift, and recovery"
-else
-    fail "installer unit tests — $(tail -8 "$VALIDATE_TMP/installer-tests.log" | tr '\n' ' ')"
-fi
-
-if [ ! -d "$SCRIPT_DIR/prepush/tests" ]; then
-    if [ "$PROFILE" = "private" ]; then
-        fail "private pre-push workflow tests — required suite is missing"
-    else
-        skip "private pre-push workflow tests"
-    fi
-elif PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-    -s "$SCRIPT_DIR/prepush/tests" -p 'test_*.py' \
-    > "$VALIDATE_TMP/prepush-tests.log" 2>&1; then
-    pass "private push policy, public readiness, and workflow completion"
-else
-    fail "pre-push workflow tests — $(tail -8 "$VALIDATE_TMP/prepush-tests.log" | tr '\n' ' ')"
+echo "  unittest suites: $VALIDATE_JOBS workers; live CLI is a separate --live-cli check"
+SUITE_EXIT=0
+python3 "$SCRIPT_DIR/tests/run_unittest_suites.py" --profile "$PROFILE" \
+    --jobs "$VALIDATE_JOBS" --log-dir "$VALIDATE_TMP" \
+    > "$VALIDATE_TMP/suites.tsv" 2> "$VALIDATE_TMP/suites-error.log" || SUITE_EXIT=$?
+SUITE_FAILURES=0
+while IFS=$'\t' read -r outcome message; do
+    case "$outcome" in
+        pass) pass "$message" ;;
+        skip) skip "$message" ;;
+        fail) fail "$message"; SUITE_FAILURES=$((SUITE_FAILURES+1)) ;;
+        *) fail "invalid unit test runner output"; SUITE_FAILURES=$((SUITE_FAILURES+1)) ;;
+    esac
+done < "$VALIDATE_TMP/suites.tsv"
+if [ "$SUITE_EXIT" -ne 0 ] && [ "$SUITE_FAILURES" -eq 0 ]; then
+    fail "unit test runner exited $SUITE_EXIT — $(tail -8 "$VALIDATE_TMP/suites-error.log" | tr '\n' ' ')"
+elif [ ! -s "$VALIDATE_TMP/suites.tsv" ]; then
+    fail "unit test runner returned no results"
 fi
 
 if [ -d "$SCRIPT_DIR/prepush/tests" ]; then
@@ -175,41 +189,9 @@ if [ -d "$SCRIPT_DIR/prepush/tests" ]; then
     fi
 fi
 
-if [ ! -d "$SCRIPT_DIR/release/tests" ]; then
-    if [ "$PROFILE" = "private" ]; then
-        fail "private release workflow tests — required suite is missing"
-    else
-        skip "private release workflow tests"
-    fi
-elif PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-    -s "$SCRIPT_DIR/release/tests" -p 'test_*.py' \
-    > "$VALIDATE_TMP/release-tests.log" 2>&1; then
-    pass "release build safety + exact-tag public publish"
-else
-    fail "release workflow tests — $(tail -8 "$VALIDATE_TMP/release-tests.log" | tr '\n' ' ')"
-fi
-
-if [ ! -f "$REPO_DIR/eval/run.py" ]; then
-    if [ "$PROFILE" = "private" ]; then
-        fail "eval v2 runner tests — required private harness is missing"
-    else
-        skip "eval v2 runner tests (private harness not present in this checkout)"
-    fi
-elif PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-    -s "$REPO_DIR/eval/tests" -p 'test_*.py' > "$VALIDATE_TMP/eval-v2-tests.log" 2>&1; then
-    pass "eval v2 transcript normalization and evidence contracts"
-else
-    fail "eval v2 runner tests — $(tail -8 "$VALIDATE_TMP/eval-v2-tests.log" | tr '\n' ' ')"
-fi
-
-if python3 "$SCRIPT_DIR/tests/check-component-catalog.py" > "$VALIDATE_TMP/component-catalog.log" 2>&1; then
-    pass "component catalog"
-else
-    fail "component catalog — $(tail -3 "$VALIDATE_TMP/component-catalog.log" | tr '\n' ' ')"
-fi
-
+# check-host-support also runs the complete standalone catalog checker.
 if python3 "$SCRIPT_DIR/tests/check-host-support.py" > "$VALIDATE_TMP/host-support.log" 2>&1; then
-    pass "dual-host component contracts"
+    pass "component catalog + Codex component contracts"
 else
     fail "host support — $(tail -3 "$VALIDATE_TMP/host-support.log" | tr '\n' ' ')"
 fi
@@ -242,6 +224,7 @@ fi
 # ── 5. Report-planner contract tests ───────────────────────────────
 
 REPORT_PLANNER_TEST="$REPO_DIR/scripts/tests/contracts/hukuhaka-report-planner.test.mjs"
+UIUX_FOUNDATION_TEST="$REPO_DIR/scripts/tests/contracts/hukuhaka-uiux-foundation.test.mjs"
 
 echo ""
 echo "Report planner contract:"
@@ -254,14 +237,25 @@ else
     fail "report-planner static tests — $(tail -3 "$VALIDATE_TMP/report-planner-test.log" | tr '\n' ' ')"
 fi
 
+echo ""
+echo "UI/UX Foundation contract:"
+
+if [ ! -f "$UIUX_FOUNDATION_TEST" ]; then
+    if [ "$PROFILE" = "private" ]; then
+        fail "UI/UX Foundation static tests — required private harness is missing"
+    else
+        skip "UI/UX Foundation static tests (private harness not present in this checkout)"
+    fi
+elif node --test "$UIUX_FOUNDATION_TEST" > "$VALIDATE_TMP/uiux-foundation-test.log" 2>&1; then
+    pass "implicit routing + design ownership + rendered verification"
+else
+    fail "UI/UX Foundation static tests — $(tail -3 "$VALIDATE_TMP/uiux-foundation-test.log" | tr '\n' ' ')"
+fi
+
 # ── 6. Codex runtime tests ──────────────────────────────────────────
 
 CODEX_TESTS=(
-    "$REPO_DIR/scripts/tests/contracts/hukuhaka-codex-broker.test.mjs"
-    "$REPO_DIR/scripts/tests/contracts/hukuhaka-codex-hooks.test.mjs"
     "$REPO_DIR/scripts/tests/contracts/hukuhaka-memory-audit-hooks.test.mjs"
-    "$REPO_DIR/scripts/tests/contracts/hukuhaka-codex-prompting.test.mjs"
-    "$REPO_DIR/scripts/tests/contracts/hukuhaka-codex-transfer.test.mjs"
 )
 
 echo ""
@@ -283,7 +277,7 @@ if [ "$codex_tests_present" -eq 0 ]; then
 elif [ "$codex_tests_present" -ne "${#CODEX_TESTS[@]}" ]; then
     fail "Codex runtime tests — incomplete private harness; missing: $codex_tests_missing"
 elif node --test "${CODEX_TESTS[@]}" > "$VALIDATE_TMP/codex-runtime-test.log" 2>&1; then
-    pass "broker lifecycle + prompting workflows + memory pressure + session transfer"
+    pass "Codex memory pressure hooks"
 else
     fail "Codex runtime tests — $(tail -3 "$VALIDATE_TMP/codex-runtime-test.log" | tr '\n' ' ')"
 fi
@@ -315,6 +309,7 @@ fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "$PASSES passed, $SKIPS skipped, $FAILURES failed."
+echo "Validation elapsed: $((SECONDS-VALIDATE_START_SECONDS))s ($PROFILE, $VALIDATE_JOBS workers)."
 if [ "$FAILURES" -eq 0 ]; then
     exit 0
 else

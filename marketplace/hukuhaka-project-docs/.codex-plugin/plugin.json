@@ -1,0 +1,30 @@
+{
+  "name": "hukuhaka-project-docs",
+  "version": "0.1.3",
+  "description": "Inventory, validate, audit, and propose synchronized repository documentation manifests without turning derived context into authority.",
+  "author": {
+    "name": "hukuhaka"
+  },
+  "repository": "https://github.com/hukuhaka/hukuhaka-harness",
+  "license": "MIT",
+  "keywords": [
+    "documentation",
+    "project-context",
+    "manifest",
+    "audit",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hukuhaka Project Docs",
+    "shortDescription": "Route and validate repository documentation.",
+    "longDescription": "Inventory repository documents, validate a project-docs.json authority index, audit lifecycle and coverage conflicts, and propose approval-gated bootstrap or synchronization changes.",
+    "developerName": "hukuhaka",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Planning"
+    ],
+    "defaultPrompt": "Use $project-docs to audit this repository's documentation manifest."
+  }
+}

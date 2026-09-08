@@ -149,39 +149,22 @@ exec {} "$@"
         )
         fake_python.chmod(0o755)
 
-        fake_claude = fake_bin / "claude"
-        fake_claude.write_text(
+        fake_codex = fake_bin / "codex"
+        fake_codex.write_text(
             """#!/bin/bash
+set -eu
 if [ "${1:-}" = "--version" ]; then
-    printf 'claude bootstrap test double\\n'
+    printf 'codex bootstrap test double\\n'
 elif [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--json" ]; then
-    config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    python3 - "$config_dir" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-installed_path = root / "plugins" / "installed_plugins.json"
-settings_path = root / "settings.json"
-installed = json.loads(installed_path.read_text()) if installed_path.is_file() else {"plugins": {}}
-settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
-enabled = settings.get("enabledPlugins", {})
-plugins = []
-for plugin_id, entries in installed.get("plugins", {}).items():
-    if not isinstance(entries, list) or not entries:
-        continue
-    item = dict(entries[0])
-    item.update({"id": plugin_id, "enabled": enabled.get(plugin_id) is True})
-    plugins.append(item)
-print(json.dumps(plugins))
-PY
+    printf '{"installed":[]}\\n'
+else
+    printf 'unexpected fake codex args: %s\\n' "$*" >&2
+    exit 2
 fi
-exit 0
 """,
             encoding="utf-8",
         )
-        fake_claude.chmod(0o755)
+        fake_codex.chmod(0o755)
 
         if decoy:
             # A directory that merely looks like the package root is enough.
@@ -278,7 +261,7 @@ exit 0
         # wrong version is installed with no error.
         user_arguments = (
             "--version=1.1.1",
-            "claude",
+            "codex",
             "install",
             "--recommended",
             "--dry-run",
@@ -320,11 +303,11 @@ exit 0
         self.assertIn("interactive installation requires a terminal", result.stderr)
         runtime_calls = [line for line in calls if "-m scripts.install.main" in line]
         self.assertEqual(1, len(runtime_calls), calls)
-        self.assertFalse((home / ".claude" / ".hukuhaka-manifest.json").exists())
+        self.assertFalse((home / ".codex").exists())
 
     def test_remote_explicit_bootstrap_downloads_and_installs_once(self) -> None:
         result, home, calls = self.run_remote_bootstrap(
-            ("claude", "install", "--recommended", "--yes")
+            ("codex", "install", "--components", "hukuhaka-report-planner", "--dry-run", "--yes")
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
@@ -332,9 +315,7 @@ exit 0
         self.assertNotIn("unbound variable", result.stderr)
         runtime_calls = [line for line in calls if "-m scripts.install.main" in line]
         self.assertEqual(1, len(runtime_calls), calls)
-        manifest = home / ".claude" / ".hukuhaka-manifest.json"
-        self.assertTrue(manifest.is_file(), result.stdout)
-        self.assertIn('"version": "1.1.1"', manifest.read_text(encoding="utf-8"))
+        self.assertIn("[dry-run] plugin add hukuhaka-report-planner@hukuhaka-harness", result.stdout)
 
     def test_remote_bootstrap_ignores_a_lookalike_runtime_in_the_caller_cwd(self) -> None:
         # The documented `curl ... | bash` run from inside any directory that
@@ -344,15 +325,21 @@ exit 0
         # which made an attacker-writable cwd a code-execution vector during an
         # install of a verified release.
         result, home, _ = self.run_remote_bootstrap(
-            ("claude", "install", "--recommended", "--yes"),
+            (
+                "codex",
+                "install",
+                "--components",
+                "hukuhaka-report-planner",
+                "--dry-run",
+                "--yes",
+            ),
             decoy=True,
         )
         marker = home.parent / "decoy-ran.txt"
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse(marker.exists(), "the caller's cwd shadowed the verified runtime")
-        manifest = home / ".claude" / ".hukuhaka-manifest.json"
-        self.assertTrue(manifest.is_file(), result.stdout)
+        self.assertIn("[dry-run] plugin add hukuhaka-report-planner@hukuhaka-harness", result.stdout)
 
 
 if __name__ == "__main__":

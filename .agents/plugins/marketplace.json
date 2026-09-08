@@ -51,6 +51,30 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Developer Tools"
+    },
+    {
+      "name": "hukuhaka-project-docs",
+      "source": {
+        "source": "local",
+        "path": "./marketplace/hukuhaka-project-docs"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "hukuhaka-uiux-foundation",
+      "source": {
+        "source": "local",
+        "path": "./marketplace/hukuhaka-uiux-foundation"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
     }
   ]
 }

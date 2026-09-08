@@ -14,11 +14,8 @@ changed_plugins=$(git diff --name-only "$BASE"...HEAD -- marketplace/ \
 failed=0
 while IFS= read -r plugin; do
     [ -n "$plugin" ] || continue
-    claude_manifest="marketplace/$plugin/.claude-plugin/plugin.json"
     codex_manifest="marketplace/$plugin/.codex-plugin/plugin.json"
-    if [ -f "$claude_manifest" ]; then
-        manifest="$claude_manifest"
-    elif [ -f "$codex_manifest" ]; then
+    if [ -f "$codex_manifest" ]; then
         manifest="$codex_manifest"
     else
         continue

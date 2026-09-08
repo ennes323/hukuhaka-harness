@@ -15,18 +15,34 @@ ROOT = Path(__file__).resolve().parents[2]
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 CURRENT_DOCS = (
+    "AGENTS.md",
     "README.md",
     "docs/README.md",
     "docs/host-support.md",
-    "docs/hukuhaka-codex/README.md",
-    "docs/hukuhaka-codex/compatibility.md",
-    "docs/hukuhaka-codex/component-inventory.md",
-    "docs/hukuhaka-codex/decisions.md",
-    "docs/hukuhaka-codex/update-runbook.md",
+    "docs/hukuhaka-project-docs/README.md",
+    "docs/hukuhaka-project-docs/implementation-plan.md",
+    "docs/hukuhaka-project-docs/decisions.md",
+    "docs/hukuhaka-report-planner/README.md",
+    "docs/hukuhaka-report-planner/craft-sources.md",
     "docs/plugin-guide/README.md",
+    "docs/plugin-guide/agents-and-hooks.md",
+    "docs/plugin-guide/automation-and-loops.md",
     "docs/plugin-guide/codex.md",
+    "docs/plugin-guide/distribution.md",
+    "docs/plugin-guide/headless-and-automation.md",
+    "docs/plugin-guide/plugins.md",
+    "docs/plugin-guide/skill-design.md",
+    "docs/plugin-guide/skills.md",
+    "docs/plugin-guide/team-coordination.md",
     "docs/scripts/README.md",
 )
+
+
+def required_current_docs(root: Path) -> tuple[str, ...]:
+    """Require repository instructions only in the private source checkout."""
+    if (root / "scripts" / "release" / "main.py").is_file():
+        return CURRENT_DOCS
+    return tuple(relative for relative in CURRENT_DOCS if relative != "AGENTS.md")
 
 
 def markdown_slug(value: str) -> str:
@@ -44,7 +60,11 @@ def tracked_markdown(root: Path) -> list[Path]:
         check=False,
     )
     if result.returncode == 0:
-        return [root / item.decode() for item in result.stdout.split(b"\0") if item]
+        return [
+            root / item.decode()
+            for item in result.stdout.split(b"\0")
+            if item and (root / item.decode()).is_file()
+        ]
     # Staged public candidates are intentionally plain directories rather than
     # Git checkouts. Every Markdown file there came from the public allow-list,
     # so the filesystem is the exact validation surface.
@@ -88,20 +108,22 @@ def validate_current_docs(root: Path = ROOT) -> list[str]:
         if component.get("kind") != "plugin":
             continue
         versions = set()
-        for metadata in component.get("hosts", {}).values():
-            manifest = metadata.get("manifest")
-            if manifest:
-                versions.add(json.loads((root / manifest).read_text(encoding="utf-8"))["version"])
+        metadata = component.get("hosts", {}).get("codex", {})
+        manifest = metadata.get("manifest")
+        if manifest:
+            versions.add(json.loads((root / manifest).read_text(encoding="utf-8"))["version"])
         if len(versions) == 1:
             manifests[component["name"]] = versions.pop()
 
     readme = (root / "README.md").read_text(encoding="utf-8")
+    errors.extend(validate_project_docs_status(root, catalog, readme))
     for name, version in manifests.items():
         row = next((line for line in readme.splitlines() if line.startswith(f"| **{name}** |")), "")
-        if f"| `{version}` |" not in row:
+        if f"| `{version}` |" not in row and f"| <code>{version}</code> |" not in row:
             errors.append(f"README.md: {name} version differs from manifest {version}")
 
-    for relative in CURRENT_DOCS:
+    errors.extend(validate_codex_only_docs(root))
+    for relative in required_current_docs(root):
         path = root / relative
         if not path.is_file():
             if relative.startswith("docs/") and not (root / "docs").exists():
@@ -109,16 +131,65 @@ def validate_current_docs(root: Path = ROOT) -> list[str]:
             errors.append(f"{relative}: required current document is missing")
             continue
         text = path.read_text(encoding="utf-8")
-        if relative not in {"docs/hukuhaka-codex/compatibility.md"}:
-            for stale in ("models-luna-v2.json", "model_catalog_json"):
-                if stale in text:
-                    errors.append(f"{relative}: current contract contains obsolete Luna term {stale}")
+        for stale in ("models-luna-v2.json", "model_catalog_json"):
+            if stale in text:
+                errors.append(f"{relative}: current contract contains obsolete Luna term {stale}")
 
     public_paths = [root / "README.md"] + sorted((root / "marketplace").glob("*/README.md"))
     for path in public_paths:
         text = path.read_text(encoding="utf-8")
         if re.search(r"\]\((?:\.\./)*docs/", text):
             errors.append(f"{path.relative_to(root)}: public document links to private docs/")
+    return errors
+
+
+def validate_codex_only_docs(root: Path = ROOT) -> list[str]:
+    """Keep the active instruction and documentation surface Codex-only."""
+    errors: list[str] = []
+    if (root / "CLAUDE.md").exists():
+        errors.append("CLAUDE.md: retired root instruction file must not remain")
+    if (root / "docs" / "hukuhaka-codex").exists():
+        errors.append("docs/hukuhaka-codex: retired maintenance records must live under docs/archive")
+    for relative in CURRENT_DOCS:
+        path = root / relative
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"\bClaude(?: Code)?\b", text, re.IGNORECASE):
+            errors.append(f"{relative}: active document contains retired host reference")
+    return errors
+
+
+def validate_project_docs_status(root: Path, catalog: dict, readme: str) -> list[str]:
+    """Keep experimental maturity separate from native install support."""
+    errors: list[str] = []
+    components = {item["name"]: item for item in catalog.get("components", [])}
+    for name, label in (
+        ("hukuhaka-project-docs", "hukuhaka-project-docs"),
+        ("project-doc-reader", "Project Doc Reader"),
+    ):
+        component = components.get(name, {})
+        if component.get("default") is not False or component.get("lifecycle") != "supported":
+            errors.append(f"components.json: {name} must retain supported installation and opt-in default")
+        row = next((line for line in readme.splitlines() if line.startswith(f"| **{label}** |")), "")
+        if "Experimental / opt-in" not in row or "Codex" not in row:
+            errors.append(f"README.md: {name} must be experimental / opt-in and Codex-only")
+
+    for relative in (
+        "docs/README.md",
+        "docs/host-support.md",
+        "docs/hukuhaka-project-docs/README.md",
+        "docs/hukuhaka-project-docs/implementation-plan.md",
+        "docs/hukuhaka-project-docs/decisions.md",
+    ):
+        path = root / relative
+        if not path.is_file():
+            continue  # CURRENT_DOCS enforces presence in private checkouts.
+        text = path.read_text(encoding="utf-8")
+        if "experimental / opt-in" not in text.lower():
+            errors.append(f"{relative}: missing Project Docs experimental / opt-in status")
+        if re.search(r"human (?:quality )?verdict pending", text, re.IGNORECASE):
+            errors.append(f"{relative}: Project Docs pilot verdict is stale")
     return errors
 
 

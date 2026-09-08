@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-worklog",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Maintain current project work and durable completion or closure history in a shared host-neutral worklog.",
   "author": {
     "name": "hukuhaka"
@@ -14,7 +14,6 @@
     "project-management"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/claude-codex-hooks.json",
   "interface": {
     "displayName": "Hukuhaka Worklog",
     "shortDescription": "Keep current work and decision history consistent.",

@@ -11,6 +11,7 @@ from unittest import mock
 
 from scripts.install.codex_config import (
     AGENT_POLICY_KEYS,
+    AGENT_WAIT_SETTINGS,
     CONTEXT_POLICY_KEYS,
     RECOMMENDED_SETTINGS,
     CodexAgentPolicy,
@@ -32,12 +33,29 @@ AGENT_SETTINGS = {
 
 
 class CodexConfigTextTests(unittest.TestCase):
+    def test_agent_wait_update_preserves_other_settings_and_is_idempotent(self) -> None:
+        original = (
+            'model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n'
+            '[features]\nmulti_agent = true\n'
+            'multi_agent_v2.min_wait_timeout_ms = 10000 # local note\n'
+            'multi_agent_v2.default_wait_timeout_ms = 30000\n'
+            '[agents]\nmax_concurrent_threads_per_session = 8\n'
+        )
+        expected = original.replace('10000 # local note', '120000 # local note').replace(
+            'default_wait_timeout_ms = 30000', 'default_wait_timeout_ms = 120000')
+        updated = update_config(original, AGENT_WAIT_SETTINGS,
+                                managed_keys=tuple(AGENT_WAIT_SETTINGS))
+        self.assertEqual(expected, updated)
+        self.assertEqual(updated, update_config(updated, AGENT_WAIT_SETTINGS,
+                                               managed_keys=tuple(AGENT_WAIT_SETTINGS)))
+
     def test_recommended_settings_are_idempotent(self) -> None:
         first = update_config("", RECOMMENDED_SETTINGS)
         second = update_config(first, RECOMMENDED_SETTINGS)
 
         self.assertEqual(first, second)
         self.assertEqual(RECOMMENDED_SETTINGS, current_values(first))
+        self.assertEqual("false", current_values(first)[("features", "multi_agent")])
         self.assertNotIn("\nmodel =", first)
         self.assertNotIn("max_concurrent_threads_per_session", first)
         self.assertNotIn("max_depth", first)

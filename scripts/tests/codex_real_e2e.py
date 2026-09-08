@@ -22,6 +22,8 @@ from typing import Dict, Iterable, Mapping, Optional, Sequence
 
 SCOUT_BEGIN = "<!-- hukuhaka-evidence-scout:begin -->"
 SCOUT_END = "<!-- hukuhaka-evidence-scout:end -->"
+READER_BEGIN = "<!-- hukuhaka-project-doc-reader:begin -->"
+READER_END = "<!-- hukuhaka-project-doc-reader:end -->"
 
 
 class E2EFailure(RuntimeError):
@@ -174,25 +176,31 @@ def expected_plugins(source: Path) -> set[str]:
 
 def validate_install(source: Path, version: str, root: Path, *, plugins: bool) -> None:
     home = codex_home(root)
-    agent = home / "agents" / "evidence-scout.toml"
+    agent = home / "agents" / "astra_worker.toml"
     routing = home / "AGENTS.md"
-    manifest_path = home / ".hukuhaka-evidence-scout-manifest.json"
+    manifest_path = home / ".hukuhaka-astra_worker-manifest.json"
     config = home / "config.toml"
     for path in (agent, routing, manifest_path, config):
         if not path.is_file():
             raise E2EFailure("missing installed artifact: {}".format(path))
-    if agent.read_bytes() != (source / "agents" / "evidence-scout.toml").read_bytes():
-        raise E2EFailure("installed evidence-scout differs from source")
+    for name in ("astra_worker", "result-runner", "evidence-scout"):
+        installed = home / "agents" / (name + ".toml")
+        if installed.read_bytes() != (source / "agents" / (name + ".toml")).read_bytes():
+            raise E2EFailure("installed {} differs from source".format(name))
+        if not (home / (".hukuhaka-" + name + "-manifest.json")).is_file():
+            raise E2EFailure("missing {} manifest".format(name))
+    if 'sandbox_mode = "read-only"' not in (home / "agents/evidence-scout.toml").read_text():
+        raise E2EFailure("installed Evidence Scout is not read-only")
     routing_text = routing.read_text(encoding="utf-8")
-    if routing_text.count(SCOUT_BEGIN) != 1 or routing_text.count(SCOUT_END) != 1:
-        raise E2EFailure("Evidence Scout routing markers are not unique")
+    if SCOUT_BEGIN in routing_text or SCOUT_END in routing_text:
+        raise E2EFailure("fresh install contains obsolete Scout routing")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schemaVersion") != 3 or manifest.get("version") != version:
-        raise E2EFailure("Evidence Scout manifest is not the expected schema/version")
-    if any("catalog" in key.lower() for key in manifest):
-        raise E2EFailure("schema-v3 manifest still owns a model catalog")
+    if manifest.get("schemaVersion") != 4 or manifest.get("version") != version:
+        raise E2EFailure("Worker manifest is not the expected schema/version")
+    if any("catalog" in key.lower() or key.startswith("routing") for key in manifest):
+        raise E2EFailure("schema-v4 manifest still owns a model catalog or routing")
     config_text = config.read_text(encoding="utf-8")
-    for expected in ("multi_agent = true",):
+    for expected in ("multi_agent = false",):
         if expected not in config_text:
             raise E2EFailure("missing runtime setting: {}".format(expected))
     if "model_catalog_json" in config_text:
@@ -202,6 +210,21 @@ def validate_install(source: Path, version: str, root: Path, *, plugins: bool) -
     doctor(root, source)
     if plugins and plugin_names(root, source) != expected_plugins(source):
         raise E2EFailure("installed plugin set differs from recommended components")
+
+
+def seed_archived_scout(source: Path, version: str, root: Path) -> None:
+    # Seed a prior manifest-owned install directly from the frozen fixture so
+    # legacy cleanup remains independent from the active Scout definition.
+    run(
+        ("python3", "-c",
+         "from pathlib import Path; import sys; sys.path.insert(0, sys.argv[1]); "
+         "from scripts.install.codex import CodexEvidenceScoutDeployment; "
+         "CodexEvidenceScoutDeployment(Path(sys.argv[1]) / "
+         "'scripts/tests/fixtures/archived-agents/evidence-scout.toml', "
+         "Path(sys.argv[2]), sys.argv[3], enabled=True).deploy()",
+         str(source), str(codex_home(root)), version),
+        cwd=source, environment=environment(root),
+    )
 
 
 def seed_legacy_v2(
@@ -216,9 +239,14 @@ def seed_legacy_v2(
     catalog_path = home / "models-luna-v2.json"
     catalog_path.write_bytes(catalog)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    block = (SCOUT_BEGIN + "\nLegacy routing.\n" + SCOUT_END).encode()
+    (home / "AGENTS.md").write_bytes(block + b"\n")
     manifest.update(
         {
             "schemaVersion": 2,
+            "routingTarget": "AGENTS.md",
+            "routingHash": hashlib.sha256(block).hexdigest(),
+            "prefix": "", "suffix": "\n",
             "version": "1.1.10",
             "catalogSource": "models_cache.json",
             "catalogSourceHash": "legacy-source-hash",
@@ -252,49 +280,105 @@ def bundled_catalog(root: Path, source: Path) -> bytes:
 
 
 def scenario_fresh(source: Path, version: str, root: Path) -> None:
-    install(source, version, root)
+    components = tuple(sorted(expected_plugins(source))) + (
+        "agents-md", "astra_worker", "result-runner", "evidence-scout",
+    )
+    install(source, version, root, components=components)
     validate_install(source, version, root, plugins=True)
     home = codex_home(root)
     managed = (
+        home / "agents" / "astra_worker.toml",
+        home / "agents" / "result-runner.toml",
         home / "agents" / "evidence-scout.toml",
         home / "AGENTS.md",
+        home / ".hukuhaka-astra_worker-manifest.json",
+        home / ".hukuhaka-result-runner-manifest.json",
         home / ".hukuhaka-evidence-scout-manifest.json",
         home / "config.toml",
     )
     before = snapshot(managed)
-    install(source, version, root)
+    install(source, version, root, components=components)
     if snapshot(managed) != before:
-        raise E2EFailure("repeated install changed managed Evidence Scout files")
+        raise E2EFailure("repeated install changed managed agent files")
     install(source, version, root, action="uninstall")
     if plugin_names(root, source) & expected_plugins(source):
         raise E2EFailure("uninstall left managed plugins installed")
-    if (home / "agents" / "evidence-scout.toml").exists():
-        raise E2EFailure("uninstall left the Evidence Scout agent")
-    if (home / ".hukuhaka-evidence-scout-manifest.json").exists():
-        raise E2EFailure("uninstall left the Evidence Scout manifest")
+    for name in ("astra_worker", "result-runner", "evidence-scout"):
+        if (home / "agents" / (name + ".toml")).exists() or (home / (".hukuhaka-" + name + "-manifest.json")).exists():
+            raise E2EFailure("uninstall left agent state: {}".format(name))
     config_text = (home / "config.toml").read_text(encoding="utf-8")
     if "max_concurrent_threads_per_session" in config_text or "max_depth" in config_text:
         raise E2EFailure("component lifecycle wrote agent execution policy")
-    install(source, version, root)
+    install(source, version, root, components=components)
     validate_install(source, version, root, plugins=True)
 
 
+def scenario_project_docs_pair(source: Path, version: str, root: Path) -> None:
+    environment(root)
+    home = codex_home(root)
+    routing = home / "AGENTS.md"
+    sentinel = b"# User sentinel\n\nPreserve this byte-for-byte.\n"
+    routing.write_bytes(sentinel)
+    components = ("hukuhaka-project-docs", "project-doc-reader")
+
+    install(source, version, root, components=components)
+    agent = home / "agents" / "project-doc-reader.toml"
+    helper = home / "agents" / "project-doc-reader-tool.py"
+    manifest_path = home / ".hukuhaka-project-doc-reader-manifest.json"
+    config = home / "config.toml"
+    for path in (agent, helper, routing, manifest_path, config):
+        if not path.is_file():
+            raise E2EFailure("missing Project Docs pair artifact: {}".format(path))
+    if plugin_names(root, source) != {"hukuhaka-project-docs"}:
+        raise E2EFailure("Project Docs pair installed an unexpected plugin set")
+    if agent.read_bytes() != (source / "agents" / "project-doc-reader.toml").read_bytes():
+        raise E2EFailure("installed project-doc-reader differs from source")
+    helper_source = source / "marketplace" / "hukuhaka-project-docs" / "skills" / "project-docs" / "scripts" / "project_docs.py"
+    if helper.read_bytes() != helper_source.read_bytes():
+        raise E2EFailure("installed project-doc-reader helper differs from source")
+    routing_text = routing.read_text(encoding="utf-8")
+    if routing.read_bytes() != sentinel:
+        raise E2EFailure("Project Doc Reader install changed the user sentinel")
+    if READER_BEGIN in routing_text or READER_END in routing_text:
+        raise E2EFailure("Project Doc Reader installed obsolete routing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schemaVersion") != 4 or manifest.get("version") != version:
+        raise E2EFailure("Project Doc Reader manifest has the wrong schema/version")
+    resources = manifest.get("resources", [])
+    if [item.get("target") for item in resources] != ["agents/project-doc-reader-tool.py"]:
+        raise E2EFailure("Project Doc Reader manifest does not own its helper")
+    managed = (agent, helper, routing, manifest_path, config)
+    before = snapshot(managed)
+
+    install(source, version, root, components=components)
+    if snapshot(managed) != before:
+        raise E2EFailure("repeated Project Docs pair install changed managed files")
+
+    install(source, version, root, action="uninstall")
+    if plugin_names(root, source):
+        raise E2EFailure("Project Docs pair uninstall left a plugin installed")
+    if agent.exists() or helper.exists() or manifest_path.exists():
+        raise E2EFailure("Project Docs pair uninstall left Reader state")
+    if routing.read_bytes() != sentinel:
+        raise E2EFailure("Project Docs pair uninstall did not restore the sentinel")
+
+
 def scenario_legacy(source: Path, version: str, root: Path, *, foreign: bool) -> None:
-    install(source, version, root, components=("evidence-scout",))
+    seed_archived_scout(source, version, root)
     home = codex_home(root)
     catalog = bundled_catalog(root, source)
     foreign_pointer = str(home / "user-models.json") if foreign else None
     if foreign_pointer is not None:
         Path(foreign_pointer).write_bytes(catalog)
     seed_legacy_v2(home, catalog=catalog, pointer=foreign_pointer)
-    install(source, version, root, components=("evidence-scout",))
-    manifest = json.loads(
-        (home / ".hukuhaka-evidence-scout-manifest.json").read_text(encoding="utf-8")
-    )
-    if manifest.get("schemaVersion") != 3 or any(
-        "catalog" in key.lower() for key in manifest
-    ):
-        raise E2EFailure("legacy install did not migrate to schema v3")
+    install(source, version, root, components=("astra_worker", "result-runner"))
+    if (home / ".hukuhaka-evidence-scout-manifest.json").exists() or (home / "agents/evidence-scout.toml").exists():
+        raise E2EFailure("legacy Scout was not removed")
+    for name in ("astra_worker", "result-runner"):
+        if (home / "agents" / (name + ".toml")).read_bytes() != (source / "agents" / (name + ".toml")).read_bytes():
+            raise E2EFailure("legacy replacement differs from source: {}".format(name))
+    if (home / "AGENTS.md").exists():
+        raise E2EFailure("legacy routing-only guidance was not removed")
     if (home / "models-luna-v2.json").exists():
         raise E2EFailure("legacy owned catalog was not removed")
     config = (home / "config.toml").read_text(encoding="utf-8")
@@ -307,7 +391,7 @@ def scenario_legacy(source: Path, version: str, root: Path, *, foreign: bool) ->
 
 
 def scenario_drift(source: Path, version: str, root: Path) -> None:
-    install(source, version, root, components=("evidence-scout",))
+    seed_archived_scout(source, version, root)
     home = codex_home(root)
     seed_legacy_v2(home, catalog=bundled_catalog(root, source), drift=True)
     observed = (
@@ -322,7 +406,7 @@ def scenario_drift(source: Path, version: str, root: Path) -> None:
         source,
         version,
         root,
-        components=("evidence-scout",),
+        components=("astra_worker", "result-runner"),
         expect_success=False,
     )
     if "managed evidence-scout files changed" not in (result.stdout + result.stderr):
@@ -358,7 +442,7 @@ def scenario_rollback(source: Path, version: str, root: Path) -> None:
         source,
         version,
         root,
-        components=("evidence-scout",),
+        components=("astra_worker",),
         expect_success=False,
         path_prefix=wrapper_dir,
     )
@@ -367,8 +451,8 @@ def scenario_rollback(source: Path, version: str, root: Path) -> None:
     if routing.read_text(encoding="utf-8") != "# User guidance\n":
         raise E2EFailure("rollback did not restore user AGENTS.md")
     for path in (
-        home / "agents" / "evidence-scout.toml",
-        home / ".hukuhaka-evidence-scout-manifest.json",
+        home / "agents" / "astra_worker.toml",
+        home / ".hukuhaka-astra_worker-manifest.json",
         home / "config.toml",
     ):
         if path.exists():
@@ -394,6 +478,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="hukuhaka-codex-real-e2e-") as temp_name:
         root = Path(temp_name)
         scenario_fresh(source, version, root / "fresh")
+        scenario_project_docs_pair(source, version, root / "project-docs-pair")
         scenario_legacy(source, version, root / "legacy-owned", foreign=False)
         scenario_legacy(source, version, root / "legacy-foreign", foreign=True)
         scenario_drift(source, version, root / "legacy-drift")

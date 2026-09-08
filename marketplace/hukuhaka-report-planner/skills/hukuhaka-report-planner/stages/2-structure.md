@@ -1,67 +1,28 @@
 ---
 stage: 2
-purpose: structure verified evidence into a trunk, units, reader outcomes, and anchor needs before choosing visual forms
-prereq: Stage 1 Document Model and initial Evidence blocks exist in .hukuhaka/reports/tmp-draft/spec.md
-deliverable: draft spec extended with completed Evidence and Structure blocks plus unresolved anchor intents
-verification_gate: every unit has a source-backed purpose and an anchor need or prose decision
+purpose: verify evidence and organize what the reader must understand
+prereq: draft content spec with Document Model and initial Evidence
+deliverable: verified Evidence and Structure blocks in spec.md
 ---
 
 ## Structure
 
-Read the material deeply enough to design the document from its evidence and reader job.
-This stage decides what the document must explain, not how its anchors will look.
+Read the draft spec, `references/spec-schema.md`, and `references/principles.md`.
+Resolve bundled paths relative to the planner skill root.
 
-## Required reading
+1. Verify the material deeply enough to establish the relevant facts and relationships.
+   Record inference, conflicting evidence, freshness limits, and unresolved gaps.
+2. Define the central message or organizing relationship before naming sections.
+3. Derive content units from reader questions. For each unit state its intended outcome,
+   necessary content, and source IDs. Arrange units in editorial reading order.
+   Several sources may support one unit. Do not mirror the source-file inventory in the
+   document or add a separate quotation unit merely because each source was inspected.
+4. Exclude content that does not advance the reader's purpose. Record an exclusion only
+   when omitting that boundary would let the designer misrepresent the subject.
+5. Resolve materially different content structures with the user when needed.
+   Otherwise select a defensible structure and state the assumption.
+6. Update spec.md without creating design.md.
 
-- `.hukuhaka/reports/tmp-draft/spec.md`
-- `references/spec-schema.md`
-- `references/principles.md`
-
-For a new plan, read and write only `.hukuhaka/reports/`. If that draft is absent and an
-explicit continuation refers to `.claude/reports/tmp-draft/spec.md`, read the legacy draft as
-a fallback, leave it untouched, and write the continued draft to `.hukuhaka/reports/`.
-
-## Process
-
-1. **Deep-read and verify.** Expand the Evidence block with verified sources, established
-   facts, conflicts, freshness constraints, and unresolved gaps. Keep inference explicit.
-
-2. **Choose the structural trunk.** State the central claim, decision, sequence, taxonomy,
-   comparison, timeline, spatial map, or operating loop that gives the document coherence.
-   Do not start with generic sections.
-
-3. **Derive units and anchor needs.** For each unit record:
-   - the reader question;
-   - the reader outcome;
-   - supporting source IDs;
-   - an anchor ID or `prose`.
-
-   Record only the relationship or exact evidence the reader needs. Do not choose chart,
-   diagram, table, code, animation, or another visual form yet. Do not force an anchor where
-   prose is clearer. For a small memo, two to four units and zero to three non-prose anchors
-   are usually enough.
-
-4. **Resolve meaningful ambiguity.** If two structures would materially change the artifact,
-   present one recommendation and one distinct alternative. Otherwise select the defensible
-   direction and state the assumption without adding a mandatory approval round.
-
-5. **Update the draft spec.** Preserve Document Model; complete Evidence and add Structure.
-   Give each intended non-prose anchor a stable ID and reader question, but leave its form and
-   construction brief for Stage 3. Keep each field concise and use source IDs instead of
-   repeating exact facts.
-
-## Output
-
-```
-SHORT-NAME: <kebab-case>
-TRUNK: <central structure>
-UNITS: <U1 ... Un>
-ANCHOR NEEDS: <A1 ... An, including prose-only decisions, without visual forms>
-```
-
-## Failure modes
-
-- Choosing chart, diagram, code, animation, or layout before Stage 3.
-- Adding visuals without evidence or a reader question.
-- Forcing a visual into every unit.
-- Using a generic Background/Method/Results outline without deriving it from the trunk.
+Do not choose chart, diagram, table, code-panel, animation, or layout forms.
+Do not allocate A# anchors or decide which units must be prose-only. A requested
+exact source excerpt is a user constraint, not authority to choose its visual treatment.

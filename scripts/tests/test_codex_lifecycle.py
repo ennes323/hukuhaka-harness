@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from unittest import mock
 
 from scripts.install.codex import REMOTE_MARKETPLACE_SOURCE, CodexInstaller
-from scripts.install.common import InstallerError
+from scripts.install.common import DriftError, InstallerError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -167,8 +168,11 @@ class CodexLifecycleTests(unittest.TestCase):
             "scripts.install.codex.run_json", side_effect=self.fake.run_json
         )
         self.runner.start()
+        self.doctor = mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor")
+        self.doctor.start()
 
     def tearDown(self) -> None:
+        self.doctor.stop()
         self.runner.stop()
         self.which.stop()
         self.environment.stop()
@@ -204,7 +208,143 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertLess(add_index, min(remove_indices))
         agents_path = self.codex_home / "AGENTS.md"
         self.assertTrue(agents_path.is_file())
-        self.assertIn("## Handle User Challenges", agents_path.read_text())
+        self.assertIn(
+            (ROOT / "templates" / "AGENTS.md").read_text().strip(),
+            agents_path.read_text(),
+        )
+
+    def test_first_agent_failure_reports_no_completed_operation(self) -> None:
+        reader = next(
+            item
+            for item in self.catalog["components"]
+            if item.get("name") == "project-doc-reader"
+        )
+        reader["path"] = "agents/missing-project-doc-reader.toml"
+        installer = self.installer()
+
+        with self.assertRaisesRegex(InstallerError, "source is missing"):
+            installer.install(["project-doc-reader"])
+
+        self.assertEqual([], installer.completed)
+        self.assertFalse(
+            (self.codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
+        )
+
+    def test_reader_resource_is_managed_adopted_and_drift_protected(self) -> None:
+        helper = self.codex_home / "agents" / "project-doc-reader-tool.py"
+        source = (
+            ROOT
+            / "marketplace"
+            / "hukuhaka-project-docs"
+            / "skills"
+            / "project-docs"
+            / "scripts"
+            / "project_docs.py"
+        )
+        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            self.installer().install(["project-doc-reader"])
+        self.assertEqual(source.read_bytes(), helper.read_bytes())
+        manifest_path = (
+            self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(4, manifest["schemaVersion"])
+        self.assertEqual(
+            ["agents/project-doc-reader-tool.py"],
+            [item["target"] for item in manifest["resources"]],
+        )
+
+        manifest["schemaVersion"] = 1
+        manifest.pop("resources")
+        block = b"<!-- hukuhaka-project-doc-reader:begin -->\nLegacy routing.\n<!-- hukuhaka-project-doc-reader:end -->"
+        (self.codex_home / "AGENTS.md").write_bytes(block + b"\n")
+        manifest.update({"routingTarget": "AGENTS.md", "routingHash": hashlib.sha256(block).hexdigest(),
+                         "prefix": "", "suffix": "\n"})
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            self.installer().install(["project-doc-reader"])
+        upgraded = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(4, upgraded["schemaVersion"])
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
+
+        helper.write_text("drift\n", encoding="utf-8")
+        with mock.patch(
+            "scripts.install.codex_config.CodexConfigEditor._doctor"
+        ), self.assertRaisesRegex(DriftError, "managed project-doc-reader files changed"):
+            self.installer().install(["project-doc-reader"])
+        self.assertEqual("drift\n", helper.read_text(encoding="utf-8"))
+
+        forced = CodexInstaller(
+            ROOT,
+            self.catalog,
+            "1.2.3",
+            local_source=True,
+            force=True,
+        )
+        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            forced.install(["project-doc-reader"])
+            forced._custom_agent("project-doc-reader", enabled=False).uninstall()
+        self.assertFalse(helper.exists())
+        self.assertFalse(manifest_path.exists())
+
+    def test_reader_resource_source_failure_and_doctor_rollback_leave_no_state(self) -> None:
+        reader = next(
+            item
+            for item in self.catalog["components"]
+            if item.get("name") == "project-doc-reader"
+        )
+        reader["resources"][0]["source"] = "agents/missing-reader-tool.py"
+        with self.assertRaisesRegex(InstallerError, "resource.*source is missing"):
+            self.installer().install(["project-doc-reader"])
+        helper = self.codex_home / "agents" / "project-doc-reader-tool.py"
+        agent = self.codex_home / "agents" / "project-doc-reader.toml"
+        manifest = self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
+        self.assertFalse(helper.exists())
+        self.assertFalse(agent.exists())
+        self.assertFalse(manifest.exists())
+
+        self.catalog = json.loads(
+            (ROOT / "components.json").read_text(encoding="utf-8")
+        )
+        with mock.patch(
+            "scripts.install.codex_config.CodexConfigEditor._doctor",
+            side_effect=InstallerError("injected reader doctor failure"),
+        ), self.assertRaisesRegex(InstallerError, "injected reader doctor failure"):
+            self.installer().install(["project-doc-reader"])
+        self.assertFalse(helper.exists())
+        self.assertFalse(agent.exists())
+        self.assertFalse(manifest.exists())
+
+    def test_reader_resource_symlink_is_rejected(self) -> None:
+        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            self.installer().install(["project-doc-reader"])
+        helper = self.codex_home / "agents" / "project-doc-reader-tool.py"
+        helper.unlink()
+        helper.symlink_to(ROOT / "README.md")
+        with self.assertRaisesRegex(InstallerError, "must be a regular file"):
+            self.installer().install(["project-doc-reader"])
+
+    def test_later_agent_failure_preserves_earlier_success_for_partial_result(self) -> None:
+        reader = next(
+            item
+            for item in self.catalog["components"]
+            if item.get("name") == "project-doc-reader"
+        )
+        reader["path"] = "agents/missing-project-doc-reader.toml"
+        installer = self.installer()
+
+        with mock.patch(
+            "scripts.install.codex_config.CodexConfigEditor._doctor"
+        ), self.assertRaisesRegex(InstallerError, "source is missing"):
+            installer.install(["astra_worker", "project-doc-reader"])
+
+        self.assertEqual(["installed astra_worker"], installer.completed)
+        self.assertTrue(
+            (self.codex_home / ".hukuhaka-astra_worker-manifest.json").is_file()
+        )
+        self.assertFalse(
+            (self.codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
+        )
 
     def test_remote_marketplace_is_pinned_to_the_resolved_release(self) -> None:
         with mock.patch("scripts.install.codex.git_commit", return_value="target"):
@@ -359,9 +499,13 @@ class CodexLifecycleTests(unittest.TestCase):
             reset=True,
             include_template=True,
         )
-        self.assertEqual(original, config.read_bytes())
+        self.assertEqual(original.decode() + "\n[features]\nmulti_agent = false\n",
+                         config.read_text())
+        installed = config.read_bytes()
+        self.installer().reset(include_template=True)
+        self.assertEqual(installed, config.read_bytes())
         self.installer().uninstall()
-        self.assertEqual(original, config.read_bytes())
+        self.assertEqual(installed, config.read_bytes())
 
 
 if __name__ == "__main__":

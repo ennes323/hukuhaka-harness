@@ -1,23 +1,20 @@
-# Planning principles
+# Content planning principles
 
-Read this file for every plan. These principles constrain quality, not style.
+Read this file for every plan. It governs editorial decisions, not visual design.
 
-1. **Reader job before format.** Derive structure from what the reader must know, decide,
-   find, monitor, learn, or record. A report-shaped template is not a document model.
-2. **Evidence before claims.** Link factual claims and anchors to verified sources. Mark
-   inference, conflict, freshness limits, and missing evidence explicitly.
-3. **Trunk before units.** Define the central claim, decision, sequence, taxonomy,
-   comparison, timeline, map, or operating loop before naming sections.
-4. **Questions before forms.** Define the reader question and evidence relationship before
-   selecting a chart, diagram, table, screenshot, example, checklist, or prose treatment.
-5. **No forced visuals.** Use an anchor when it improves comprehension or action. Prose is a
-   valid anchor; decorative or unsupported figures are not.
-6. **Design from content.** Form a design concept without reference names. References may
-   supply limited mechanisms after the concept exists; they do not supply the whole system.
-7. **Accessibility is semantic.** Do not encode meaning with color, position, motion, or
-   shape alone. Plan labels, text alternatives, reading order, contrast, and print behavior
-   when the medium requires them.
-8. **Freedom has boundaries.** Lock facts and meaning, guide visual language, and leave exact
-   composition open. Do not confuse a build contract with a component kit.
-9. **Complexity must earn its place.** Keep the contract proportional to the artifact. Refer
-   back to source, unit, and anchor IDs instead of restating the same evidence in every block.
+1. **Reader purpose before format.** Define what the intended reader must understand,
+   decide, find, or do, including their prior knowledge.
+2. **Evidence before claims.** Verify sources and distinguish facts, inference,
+   conflict, freshness limits, and missing evidence.
+3. **Message before sections.** Establish the central message or relationship before
+   deriving content units and their reading order.
+4. **Comprehension over coverage.** Include only content that changes the reader's
+   understanding or action. Do not repeat background or qualifications automatically.
+5. **Requirements before solutions.** Specify the meaning and evidence needed, not
+   a chart type, visual composition, or styling recipe.
+6. **User constraints remain authoritative.** Preserve explicitly requested medium,
+   output target, accessibility needs, and presentation constraints without adding preferences.
+7. **A brief is not final copy.** Planning fields and reasoning are for the designer;
+   they are not labels, captions, or paragraphs that must appear in the artifact.
+8. **Proportional detail.** Make evidence and intent unambiguous, but do not fill
+   optional fields or repeat source facts across blocks merely for completeness.

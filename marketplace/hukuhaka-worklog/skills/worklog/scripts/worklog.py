@@ -29,13 +29,8 @@ PLUGIN_NAME = "hukuhaka-worklog"
 SKILL_NAME = "worklog"
 COMMANDS = ("setup", "status", "archive")
 RECENT_LIMIT = 25
-CLAUDE_INVOCATION = f"/{PLUGIN_NAME}:{SKILL_NAME}"
 CODEX_INVOCATION = f"${PLUGIN_NAME}:{SKILL_NAME}"
 CODEX_LEGACY_INVOCATION = f"${SKILL_NAME}"
-CLAUDE_COMMANDS = {
-    f"{CLAUDE_INVOCATION} {command}": command
-    for command in COMMANDS
-}
 CODEX_COMMANDS = {
     f"{invocation} {command}": command
     for invocation in (CODEX_INVOCATION, CODEX_LEGACY_INVOCATION)
@@ -117,8 +112,7 @@ def atomic_write(path: Path, content: str) -> None:
             temporary.unlink()
 
 
-def managed_block(host: str) -> str:
-    invocation = CLAUDE_INVOCATION if host == "claude" else CODEX_INVOCATION
+def managed_block() -> str:
     return "\n".join(
         (
             BEGIN_MARKER,
@@ -127,7 +121,7 @@ def managed_block(host: str) -> str:
             "- `.hukuhaka/work.md` contains current Planned, In Progress, and On Hold work.",
             "- On the first non-trivial project task in a new session, read it before changing project files when both Worklog files exist.",
             "- Read `.hukuhaka/changelog.md` only when resuming, completing, closing, or checking prior decisions.",
-            f"- Use the installed `{invocation}` Skill automatically when non-trivial project work starts, resumes, pauses, completes, or closes.",
+            f"- Use the installed `{CODEX_INVOCATION}` Skill automatically when non-trivial project work starts, resumes, pauses, completes, or closes.",
             "- Analysis, implementation planning, routine one-off edits, and mechanical Worklog commands do not change lifecycle state.",
             "- If the files are missing during automatic use, continue the task without creating them; explicit Worklog requests require setup.",
             "- Only the primary agent changes Worklog state; delegated agents may read it but must not modify it.",
@@ -154,13 +148,13 @@ def update_managed_text(current: str, block: str, path: Path) -> tuple[str, str]
     return replacement, "updated"
 
 
-def setup(root: Path, host: str) -> int:
-    instruction = root / ("CLAUDE.md" if host == "claude" else "AGENTS.md")
+def setup(root: Path) -> int:
+    instruction = root / "AGENTS.md"
     refuse_symlink(instruction)
     current_instruction = instruction.read_text(encoding="utf-8") if instruction.exists() else ""
     next_instruction, instruction_state = update_managed_text(
         current_instruction,
-        managed_block(host),
+        managed_block(),
         instruction,
     )
 
@@ -181,11 +175,11 @@ def setup(root: Path, host: str) -> int:
         if not current_instruction:
             created.append(str(instruction.relative_to(root)))
 
-    print(f"worklog setup ({host})")
+    print("worklog setup (codex)")
     print("Created: " + (", ".join(created) if created else "none"))
     print(f"Instructions: {instruction.relative_to(root)} ({instruction_state})")
     print("Existing worklog files were left unchanged.")
-    print("Start a new host session to load the instruction update.")
+    print("Start a new Codex session to load the instruction update.")
     return 0
 
 
@@ -370,10 +364,8 @@ def hook_response(reason: str) -> str:
     )
 
 
-def hook_command(prompt: str, codex: bool) -> str | None:
+def hook_command(prompt: str) -> str | None:
     prompt = prompt.rstrip("\r\n")
-    if not codex:
-        return CLAUDE_COMMANDS.get(prompt)
     command = CODEX_COMMANDS.get(prompt)
     if command is not None:
         return command
@@ -395,7 +387,7 @@ def run_hook(
 
     codex = "PLUGIN_DATA" in environment
     prompt = payload.get("prompt")
-    command = hook_command(prompt, codex) if isinstance(prompt, str) else None
+    command = hook_command(prompt) if codex and isinstance(prompt, str) else None
     if command is None:
         return 0
 
@@ -411,7 +403,7 @@ def run_hook(
             raise WorklogError(f"project root is not a directory: {root}")
         with redirect_stdout(output):
             if command == "setup":
-                setup(root, "codex" if codex else "claude")
+                setup(root)
             elif command == "status":
                 status(root)
             else:
@@ -434,7 +426,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     setup_parser = subparsers.add_parser("setup")
-    setup_parser.add_argument("--host", choices=("claude", "codex"), required=True)
     subparsers.add_parser("status")
     archive_parser = subparsers.add_parser("archive")
     archive_parser.add_argument("--keep", type=int, default=RECENT_LIMIT)
@@ -449,7 +440,7 @@ def main() -> int:
     root = args.root.resolve()
     try:
         if args.command == "setup":
-            return setup(root, args.host)
+            return setup(root)
         if args.command == "status":
             return status(root)
         if args.command == "archive":

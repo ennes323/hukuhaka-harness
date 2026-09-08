@@ -1,7 +1,7 @@
 {
   "name": "hukuhaka-report-planner",
-  "version": "0.6.0",
-  "description": "Research and plan an evidence-based visual document, then delegate requested construction through the bundled artifact-designer skill.",
+  "version": "0.7.2",
+  "description": "Plan evidence-based visual documents as content specifications, then delegate representation, design, construction, and visual verification to a dedicated artifact designer.",
   "author": {
     "name": "hukuhaka"
   },
@@ -13,18 +13,19 @@
     "planning",
     "research",
     "anchors",
-    "spec"
+    "spec",
+    "design"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Hukuhaka Report Planner",
     "shortDescription": "Plan evidence-backed visual documents.",
-    "longDescription": "Research source material, derive the reader job and structure, direct source-backed anchors, record a finalized four-stage build contract, then delegate requested construction to one designer subagent.",
+    "longDescription": "Research source material and finalize content requirements in spec.md. For artifact requests, one designer selects visual representations, authors design.md, builds, and verifies the result.",
     "developerName": "hukuhaka",
     "category": "Productivity",
     "capabilities": [
       "Planning"
     ],
-    "defaultPrompt": "Research and plan this visual document, then delegate its construction from the validated contract."
+    "defaultPrompt": "Plan the content of this visual document and, when the artifact is requested, delegate its design and construction from the finalized content specification."
   }
 }

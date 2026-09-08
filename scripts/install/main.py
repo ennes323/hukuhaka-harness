@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -10,13 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from .claude import ClaudeDeployment, resolve_claude_config_dir
 from .codex import CodexInstaller
 from .codex_config import (
     CONTEXT_POLICY_SCOPES,
     RECOMMENDED_SETTINGS,
     AgentPolicyPlan,
     CodexAgentPolicy,
+    CodexSubagentModel,
     CodexContextPolicy,
     CodexConfigEditor,
     ConfigPlan,
@@ -31,7 +32,7 @@ from .common import InstallerError, StateError, load_json
 from .terminal import HostInstallPlan, csv_items, csv_value, prompt_install_plan
 
 
-HOST_LABELS = {"claude": "Claude Code", "codex": "Codex"}
+HOST_LABELS = {"codex": "Codex"}
 
 
 @dataclass(frozen=True)
@@ -193,15 +194,6 @@ class Installer:
             )
         return ordered
 
-    def _claude(self, components: Optional[Sequence[str]] = None) -> ClaudeDeployment:
-        return ClaudeDeployment(
-            self.repo_root,
-            resolve_claude_config_dir(fallback_home=Path.home()),
-            components,
-            dry_run=bool(getattr(self.args, "dry_run", False)),
-            force=bool(getattr(self.args, "force", False)),
-        )
-
     def _codex(self) -> CodexInstaller:
         return CodexInstaller(
             self.repo_root,
@@ -213,10 +205,7 @@ class Installer:
         )
 
     def _current_state(self, host: str) -> HostComponentState:
-        if host == "claude":
-            components, versions = self._claude([]).current_component_state()
-        else:
-            components, versions = self._codex().current_component_state()
+        components, versions = self._codex().current_component_state()
 
         normalized = {}  # type: Dict[str, str]
         for name, version in sorted(
@@ -234,8 +223,6 @@ class Installer:
         return HostComponentState(normalized_components, normalized)
 
     def _current(self, host: str) -> Set[str]:
-        if host == "claude":
-            return self._claude([]).current_components()
         return self._codex().current_components()
 
     def _version_summary(
@@ -267,7 +254,7 @@ class Installer:
         print("")
         print("Detecting supported hosts...")
         print("")
-        for host in ("claude", "codex"):
+        for host in ("codex",):
             prefix = "✓" if detected[host] else "-"
             suffix = "detected" if detected[host] else "not found"
             print("{} {} {}".format(prefix, HOST_LABELS[host], suffix))
@@ -313,7 +300,13 @@ class Installer:
                     csv_value(sorted(before - desired)) or "none"
                 )
             )
-            if plan.host == "codex" and "evidence-scout" in desired:
+            codex_agents = {
+                str(component["name"])
+                for component in self.catalog.get("components", [])
+                if component.get("kind") == "agent"
+                and "codex" in component.get("hosts", {})
+            }
+            if plan.host == "codex" and desired & codex_agents:
                 print("    Agent runtime:  multi-agent enabled")
             if plan.configure_codex:
                 print("  Settings")
@@ -392,16 +385,6 @@ class Installer:
     ) -> HostResult:
         if not plan.reset and not plan.components and not before:
             return HostResult(plan.host, "noop")
-        if plan.host == "claude":
-            try:
-                self._claude(plan.components).deploy(
-                    reset=plan.reset,
-                    reset_template=plan.include_template,
-                )
-                return HostResult("claude", "success")
-            except InstallerError as exc:
-                return HostResult("claude", "failed", exc.render())
-
         installer = self._codex()
         try:
             installer.install(
@@ -488,13 +471,11 @@ class Installer:
                 file=sys.stderr,
             )
             return 2
-        detected = {
-            host: shutil.which(host) is not None for host in ("claude", "codex")
-        }
+        detected = {"codex": shutil.which("codex") is not None}
         self._print_detection(detected)
         if not any(detected.values()):
             print(
-                "No supported host was detected. Install Claude Code or Codex first.",
+                "No supported host was detected. Install Codex first.",
                 file=sys.stderr,
             )
             return 1
@@ -502,7 +483,7 @@ class Installer:
         sections = []
         current = {}  # type: Dict[str, Set[str]]
         installed_versions = {}  # type: Dict[str, Mapping[str, str]]
-        for host in ("claude", "codex"):
+        for host in ("codex",):
             if not detected[host]:
                 continue
             state = self._current_state(host)
@@ -767,6 +748,22 @@ class Installer:
         return 0
 
     def _agent_policy(self) -> int:
+        if self.args.agent_action == "model":
+            policy = CodexSubagentModel(
+                self._codex().codex_home,
+                dry_run=bool(getattr(self.args, "dry_run", False)),
+            )
+            if self.args.model_action == "inspect":
+                print(json.dumps(policy.inspect(), indent=2, sort_keys=True))
+                return 0
+            plan = policy.plan_inherit()
+            print("Remove only global child model and effort overrides; retain role pins.")
+            print(plan.diff(), end="")
+            if not self._confirm():
+                print("Exit. No changes were made.")
+                return 0
+            policy.apply(plan)
+            return 0
         policy = CodexAgentPolicy(
             self._codex().codex_home,
             dry_run=bool(getattr(self.args, "dry_run", False)),
@@ -816,6 +813,10 @@ class Installer:
 
     def automation(self) -> int:
         host = self.args.host
+        if (self.args.action == "agents"
+                and self.args.agent_action == "model"
+                and self.args.model_action == "inspect"):
+            return self._agent_policy()
         if shutil.which(host) is None:
             print(
                 "installer [host={} stage=detect]: {} CLI was not found".format(
@@ -868,23 +869,16 @@ class Installer:
                 return self._print_results(
                     [HostResult(host, "noop")], dry_run=self.args.dry_run
                 )
-            if host == "claude":
-                try:
-                    self._claude(None).uninstall(confirm=False)
-                    result = HostResult(host, "success")
-                except InstallerError as exc:
-                    result = HostResult(host, "failed", exc.render())
-            else:
-                adapter = self._codex()
-                try:
-                    adapter.uninstall()
-                    result = HostResult(host, "success")
-                except InstallerError as exc:
-                    result = HostResult(
-                        host,
-                        "partial" if adapter.completed else "failed",
-                        exc.render(),
-                    )
+            adapter = self._codex()
+            try:
+                adapter.uninstall()
+                result = HostResult(host, "success")
+            except InstallerError as exc:
+                result = HostResult(
+                    host,
+                    "partial" if adapter.completed else "failed",
+                    exc.render(),
+                )
             return self._print_results([result], dry_run=self.args.dry_run)
 
         components = self._automation_components(host)
@@ -949,7 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", help=argparse.SUPPRESS)
     parser.add_argument("--source-dir", help=argparse.SUPPRESS)
     hosts = parser.add_subparsers(dest="host")
-    for host in ("claude", "codex"):
+    for host in ("codex",):
         host_parser = hosts.add_parser(host)
         actions = host_parser.add_subparsers(dest="action", required=True)
         for action in ("install", "reset"):
@@ -995,6 +989,15 @@ def build_parser() -> argparse.ArgumentParser:
             )
             _add_bootstrap_passthrough(agents)
             agent_actions = agents.add_subparsers(dest="agent_action")
+            agent_model = agent_actions.add_parser("model")
+            _add_bootstrap_passthrough(agent_model)
+            model_actions = agent_model.add_subparsers(dest="model_action", required=True)
+            model_inspect = model_actions.add_parser("inspect")
+            _add_bootstrap_passthrough(model_inspect)
+            model_inherit = model_actions.add_parser("inherit")
+            model_inherit.add_argument("--yes", action="store_true")
+            model_inherit.add_argument("--dry-run", action="store_true")
+            _add_bootstrap_passthrough(model_inherit)
             agents_set = agent_actions.add_parser("set")
             agents_set.add_argument(
                 "--max-concurrent",

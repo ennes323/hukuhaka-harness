@@ -27,8 +27,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install optional tree-sitter (golden ON-mode)
-        run: pip install "tree-sitter-language-pack==0.9.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Run validation
         env:

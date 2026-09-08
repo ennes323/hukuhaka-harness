@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Doc Reader response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "mode",
+    "status",
+    "root",
+    "manifest",
+    "selectedDocuments",
+    "excludedDocuments",
+    "conflicts",
+    "unknowns",
+    "budgetUsed",
+    "errors"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "mode": {"enum": ["context", "impact"]},
+    "status": {"enum": ["complete", "partial", "unavailable"]},
+    "root": {"type": "string", "pattern": "^/"},
+    "manifest": {"const": "project-docs.json"},
+    "selectedDocuments": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/selectedDocument"}
+    },
+    "excludedDocuments": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/excludedDocument"}
+    },
+    "facts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/sourcedStatement"}
+    },
+    "constraints": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/sourcedStatement"}
+    },
+    "requiredChecks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/requiredCheck"}
+    },
+    "affectedDocuments": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/affectedDocument"}
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/conflict"}
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/unknown"}
+    },
+    "budgetUsed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifestBytes",
+        "documentBytes",
+        "documents",
+        "maxDocuments",
+        "maxBytes",
+        "truncated"
+      ],
+      "properties": {
+        "manifestBytes": {"type": "integer", "minimum": 0},
+        "documentBytes": {"type": "integer", "minimum": 0},
+        "documents": {"type": "integer", "minimum": 0},
+        "maxDocuments": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/error"}
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "string",
+      "pattern": "^.+:[1-9][0-9]*$"
+    },
+    "selectedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "reason", "role", "status", "authority", "bytes"],
+      "properties": {
+        "id": {"type": "string"},
+        "path": {"type": "string"},
+        "reason": {"type": "string"},
+        "role": {"enum": ["contract", "operations", "decision", "guide", "research", "history"]},
+        "status": {"enum": ["current", "draft", "historical"]},
+        "authority": {"enum": ["normative", "advisory", "evidence"]},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "excludedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "reason"],
+      "properties": {
+        "id": {"type": "string"},
+        "path": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "sourcedStatement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "source"],
+      "properties": {
+        "statement": {"type": "string"},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
+    "requiredCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "source"],
+      "properties": {
+        "route": {"type": "string"},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
+    "affectedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "reason", "requiredAction", "verification"],
+      "properties": {
+        "id": {"type": "string"},
+        "path": {"type": "string"},
+        "reason": {"type": "string"},
+        "requiredAction": {"enum": ["review", "update", "archive", "none"]},
+        "verification": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "sources"],
+      "properties": {
+        "statement": {"type": "string"},
+        "sources": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/source"}}
+      }
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "reason"],
+      "properties": {
+        "statement": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string"},
+        "message": {"type": "string"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"const": "context"}}},
+      "then": {
+        "required": ["facts", "constraints", "requiredChecks"],
+        "properties": {"affectedDocuments": false}
+      }
+    },
+    {
+      "if": {"properties": {"mode": {"const": "impact"}}},
+      "then": {
+        "required": ["affectedDocuments"],
+        "properties": {
+          "facts": false,
+          "constraints": false,
+          "requiredChecks": false
+        }
+      }
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -11,16 +12,50 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ValidateCliTests(unittest.TestCase):
-    def test_official_refresh_tracks_current_codex_index_and_prunes_generated_stale_docs(self) -> None:
+    def test_invalid_worker_counts_fail_before_starting_checks(self) -> None:
+        for value in ("0", "-1", "5", "many"):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    [str(ROOT / "scripts/validate.sh"), "--profile", "private"], cwd=ROOT,
+                    env=dict(os.environ, VALIDATE_JOBS=value), text=True, capture_output=True,
+                )
+                self.assertEqual(2, result.returncode)
+                self.assertIn("VALIDATE_JOBS", result.stderr)
+                self.assertNotIn("JSON syntax", result.stdout)
+
+    def test_explicit_live_cli_mode_missing_model_cache_fails_instead_of_skipping(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            result = subprocess.run(
+                [str(ROOT / "scripts/validate.sh"), "--live-cli"], cwd=ROOT,
+                env=dict(os.environ, HOME=home), text=True, capture_output=True,
+            )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("--live-cli requires", result.stderr)
+        self.assertNotIn("OK (skipped", result.stderr)
+
+    def test_official_refresh_tracks_only_current_openai_indexes(self) -> None:
         script_path = ROOT / "scripts" / "maintenance" / "refresh-officials.sh"
         if not script_path.is_file():
             self.skipTest("private official-docs refresh script is not in the public checkout")
         script = script_path.read_text(encoding="utf-8")
 
+        self.assertIn("SOURCES=(codex)", script)
+        self.assertIn("Default behavior is the Codex mirror", script)
         self.assertIn('LLMS_URL="https://learn.chatgpt.com/docs/llms.txt"', script)
+        self.assertIn('LLMS_URL="https://developers.openai.com/api/docs/llms.txt"', script)
+        self.assertIn('LLMS_URL="https://developers.openai.com/api/reference/llms.txt"', script)
+        self.assertIn('LLMS_URL="https://developers.openai.com/plugins/llms.txt"', script)
+        self.assertIn('LLMS_URL="https://developers.openai.com/workspace-agents/llms.txt"', script)
         self.assertIn("https://learn\\.chatgpt\\.com/docs/", script)
         self.assertIn("prune_stale_docs", script)
-        self.assertIn('-path "$DEST/openai" -prune', script)
+        self.assertIn('DEST="$REPO_DIR/docs/officials/codex"', script)
+        self.assertIn('DEST="$REPO_DIR/docs/officials/api/docs"', script)
+        self.assertIn('DEST="$REPO_DIR/docs/officials/api/reference"', script)
+        self.assertIn('DEST="$REPO_DIR/docs/officials/plugins"', script)
+        self.assertIn('DEST="$REPO_DIR/docs/officials/workspace-agents"', script)
+        self.assertNotIn("docs/officials/openai/", script)
+        self.assertNotIn("claude", script.lower())
+        self.assertNotIn("anthropic", script.lower())
 
     def test_validation_probes_do_not_pipe_into_early_exit_consumers(self) -> None:
         script = (ROOT / "scripts" / "validate.sh").read_text(encoding="utf-8")

@@ -22,6 +22,7 @@ from .common import (
 )
 from .codex_config import (
     EVIDENCE_SCOUT_SETTINGS,
+    SUBAGENT_SETTINGS,
     CodexConfigEditor,
     ConfigPlan,
 )
@@ -81,28 +82,30 @@ def _bounds(content: bytes) -> Optional[Tuple[int, int]]:
     return start, end_marker + len(END)
 
 
-def _scout_block(template: bytes) -> bytes:
-    return SCOUT_BEGIN + b"\n" + template.rstrip(b"\r\n") + b"\n" + SCOUT_END
-
-
-def _scout_bounds(content: bytes) -> Optional[Tuple[int, int]]:
-    if not content.count(SCOUT_BEGIN) and not content.count(SCOUT_END):
+def _agent_bounds(
+    content: bytes,
+    begin: bytes,
+    end: bytes,
+    *,
+    name: str,
+) -> Optional[Tuple[int, int]]:
+    if not content.count(begin) and not content.count(end):
         return None
-    if content.count(SCOUT_BEGIN) != 1 or content.count(SCOUT_END) != 1:
+    if content.count(begin) != 1 or content.count(end) != 1:
         raise StateError(
-            "AGENTS.md contains duplicate or incomplete evidence-scout markers",
+            "AGENTS.md contains duplicate or incomplete {} markers".format(name),
             host="codex",
-            stage="evidence-scout",
+            stage=name,
         )
-    start = content.index(SCOUT_BEGIN)
-    end_marker = content.index(SCOUT_END)
+    start = content.index(begin)
+    end_marker = content.index(end)
     if end_marker < start:
         raise StateError(
-            "AGENTS.md evidence-scout markers are out of order",
+            "AGENTS.md {} markers are out of order".format(name),
             host="codex",
-            stage="evidence-scout",
+            stage=name,
         )
-    return start, end_marker + len(SCOUT_END)
+    return start, end_marker + len(end)
 
 
 class CodexGuidanceDeployment:
@@ -326,50 +329,72 @@ class CodexGuidanceDeployment:
         print("  [ok] removed agents-md from {}".format(self.target))
 
 
-class CodexEvidenceScoutDeployment:
-    """Own the named scout, its routing block, and required runtime settings."""
+class CodexCustomAgentDeployment:
+    """Own one named Codex agent and migrate obsolete routing ownership."""
 
     def __init__(
         self,
+        name: str,
         source: Path,
-        routing_source: Path,
         codex_home: Path,
         version: str,
         *,
         enabled: bool,
+        current_schema: int = 4,
+        accepted_schemas: Optional[Sequence[int]] = None,
+        resources: Sequence[Tuple[Path, str]] = (),
+        legacy_evidence_scout: bool = False,
         dry_run: bool = False,
         force: bool = False,
     ) -> None:
+        self.name = name
         self.source = source
-        self.routing_source = routing_source
         self.codex_home = codex_home
         self.version = version
         self.enabled = enabled
+        self.current_schema = current_schema
+        self.accepted_schemas = tuple(
+            accepted_schemas if accepted_schemas is not None else (1, current_schema)
+        )
+        self.resource_sources = {
+            target: source for source, target in resources
+        }
+        self.resource_targets = {
+            target: codex_home / target for target in self.resource_sources
+        }
+        self.legacy_evidence_scout = legacy_evidence_scout
         self.dry_run = dry_run
         self.force = force
-        self.target = codex_home / "agents" / "evidence-scout.toml"
+        marker = "hukuhaka-{}".format(name).encode("ascii")
+        self.begin = b"<!-- " + marker + b":begin -->"
+        self.end = b"<!-- " + marker + b":end -->"
+        self.target = codex_home / "agents" / "{}.toml".format(name)
         self.routing_target = codex_home / "AGENTS.md"
         self.catalog_target = codex_home / "models-luna-v2.json"
-        self.override = codex_home / "AGENTS.override.md"
-        self.manifest_path = codex_home / EVIDENCE_SCOUT_MANIFEST
+        self.manifest_path = codex_home / ".hukuhaka-{}-manifest.json".format(name)
         self.config = CodexConfigEditor(codex_home, dry_run=dry_run)
 
-    @staticmethod
-    def _read_regular(path: Path, *, label: str, missing_ok: bool = True) -> bytes:
+    def _read_regular(
+        self,
+        path: Path,
+        *,
+        label: str,
+        missing_ok: bool = True,
+    ) -> bytes:
         if not path.exists() and not path.is_symlink():
             if missing_ok:
                 return b""
             raise StateError(
                 "{} source is missing".format(label),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(path),
             )
         if path.is_symlink() or not path.is_file():
             raise StateError(
                 "{} must be a regular file".format(label),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(path),
             )
         content = path.read_bytes()
@@ -379,14 +404,21 @@ class CodexEvidenceScoutDeployment:
             raise StateError(
                 "{} must be UTF-8".format(label),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(path),
             ) from exc
         return content
 
     def _manifest(self) -> Optional[Dict[str, Any]]:
-        if not self.manifest_path.exists():
+        if not self.manifest_path.exists() and not self.manifest_path.is_symlink():
             return None
+        if self.manifest_path.is_symlink() or not self.manifest_path.is_file():
+            raise StateError(
+                "invalid {} manifest".format(self.name),
+                host="codex",
+                stage=self.name,
+                path=str(self.manifest_path),
+            )
         data = load_json(self.manifest_path, {})
         required = {
             "schemaVersion": int,
@@ -394,36 +426,60 @@ class CodexEvidenceScoutDeployment:
             "version": str,
             "agentTarget": str,
             "agentHash": str,
-            "routingTarget": str,
-            "routingHash": str,
-            "prefix": str,
-            "suffix": str,
         }
         if not isinstance(data, dict) or any(
             not isinstance(data.get(key), value_type)
             for key, value_type in required.items()
         ):
             raise StateError(
-                "invalid evidence-scout manifest",
+                "invalid {} manifest".format(self.name),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(self.manifest_path),
             )
         if (
-            data["schemaVersion"] not in (1, 2, 3)
-            or data["component"] != "evidence-scout"
-            or data["agentTarget"] != "agents/evidence-scout.toml"
-            or data["routingTarget"] != "AGENTS.md"
-            or data["prefix"] not in ("", "\n", "\n\n")
-            or data["suffix"] not in ("", "\n")
+            data["schemaVersion"] not in self.accepted_schemas
+            or data["component"] != self.name
+            or data["agentTarget"] != "agents/{}.toml".format(self.name)
         ):
             raise StateError(
-                "unsupported evidence-scout manifest",
+                "unsupported {} manifest".format(self.name),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(self.manifest_path),
             )
-        if data["schemaVersion"] == 2:
+        if data["schemaVersion"] != self.current_schema:
+            if (
+                data.get("routingTarget") != "AGENTS.md"
+                or not isinstance(data.get("routingHash"), str)
+                or data.get("prefix") not in ("", "\n", "\n\n")
+                or data.get("suffix") not in ("", "\n")
+            ):
+                raise StateError(
+                    "invalid legacy {} routing manifest".format(self.name),
+                    host="codex", stage=self.name, path=str(self.manifest_path),
+                )
+        elif any(key in data for key in ("routingTarget", "routingHash", "prefix", "suffix")):
+            raise StateError(
+                "current {} manifest must not own routing".format(self.name),
+                host="codex", stage=self.name, path=str(self.manifest_path),
+            )
+        if self.resource_targets and data["schemaVersion"] != 1:
+            resources = data.get("resources")
+            if not isinstance(resources, list) or len(resources) != len(self.resource_targets) or any(
+                not isinstance(item, dict)
+                or set(item) != {"target", "hash"}
+                or not isinstance(item.get("target"), str)
+                or not isinstance(item.get("hash"), str)
+                for item in resources
+            ) or {item["target"] for item in resources} != set(self.resource_targets):
+                raise StateError(
+                    "invalid {} manifest".format(self.name),
+                    host="codex",
+                    stage=self.name,
+                    path=str(self.manifest_path),
+                )
+        if self.legacy_evidence_scout and data["schemaVersion"] == 2:
             catalog_required = {
                 "catalogSource": str,
                 "catalogSourceHash": str,
@@ -440,7 +496,7 @@ class CodexEvidenceScoutDeployment:
                 raise StateError(
                     "invalid evidence-scout catalog manifest",
                     host="codex",
-                    stage="evidence-scout",
+                    stage=self.name,
                     path=str(self.manifest_path),
                 )
         return data
@@ -448,12 +504,24 @@ class CodexEvidenceScoutDeployment:
     def _runtime_settings(self) -> Dict[Tuple[str, ...], str]:
         return dict(EVIDENCE_SCOUT_SETTINGS)
 
+    def _bounds(self, content: bytes) -> Optional[Tuple[int, int]]:
+        return _agent_bounds(
+            content,
+            self.begin,
+            self.end,
+            name=self.name,
+        )
+
     def _legacy_cleanup(
         self,
         manifest: Optional[Dict[str, Any]],
         catalog: bytes,
     ) -> Tuple[bool, bool]:
-        if manifest is None or manifest["schemaVersion"] != 2:
+        if (
+            not self.legacy_evidence_scout
+            or manifest is None
+            or manifest["schemaVersion"] != 2
+        ):
             return False, False
         catalog_matches = bool(catalog) and _hash(catalog) == manifest["catalogHash"]
         remove_catalog = catalog_matches or (bool(catalog) and self.force)
@@ -467,106 +535,161 @@ class CodexEvidenceScoutDeployment:
     def _validate_owned(
         self,
         agent: bytes,
-        routing: bytes,
-        bounds: Optional[Tuple[int, int]],
         manifest: Optional[Dict[str, Any]],
         catalog: bytes,
+        resources: Mapping[str, bytes],
     ) -> None:
         if manifest is None:
-            if bounds is not None:
-                raise StateError(
-                    "evidence-scout routing block exists without its manifest",
-                    host="codex",
-                    stage="evidence-scout",
-                    path=str(self.routing_target),
-                )
             return
         if not agent:
             raise DriftError(
-                "evidence-scout manifest exists but its agent file is missing",
+                "{} manifest exists but its agent file is missing".format(self.name),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(self.target),
             )
-        if bounds is None:
-            raise DriftError(
-                "evidence-scout manifest exists but its routing block is missing",
-                host="codex",
-                stage="evidence-scout",
-                path=str(self.routing_target),
-            )
-        start, end = bounds
-        drifted = (
-            _hash(agent) != manifest["agentHash"]
-            or _hash(routing[start:end]) != manifest["routingHash"]
-        )
-        if manifest["schemaVersion"] == 2:
+        drifted = _hash(agent) != manifest["agentHash"]
+        if self.legacy_evidence_scout and manifest["schemaVersion"] == 2:
             drifted = drifted or (
                 not catalog or _hash(catalog) != manifest["catalogHash"]
             )
+        if self.resource_targets and "resources" in manifest:
+            manifest_resources = {
+                item["target"]: item["hash"] for item in manifest["resources"]
+            }
+            drifted = drifted or any(
+                not resources.get(target)
+                or _hash(resources[target]) != manifest_resources[target]
+                for target in self.resource_targets
+            )
         if drifted and not self.force:
             raise DriftError(
-                "managed evidence-scout files changed; use --force to replace them",
+                "managed {} files changed; use --force to replace them".format(
+                    self.name
+                ),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
             )
+
+    def _plan_routing_removal(self, manifest: Optional[Dict[str, Any]]) -> Optional[bytes]:
+        """Remove only a legacy manifest's block; new installs never read AGENTS.md."""
+        if manifest is None or manifest["schemaVersion"] == self.current_schema:
+            return None
+        content = self._read_regular(self.routing_target, label="Codex AGENTS.md")
+        bounds = self._bounds(content)
+        if bounds is None:
+            return None  # Already removed; finish migrating the remaining owned files.
+        start, end = bounds
+        if _hash(content[start:end]) != manifest["routingHash"] and not self.force:
+            raise DriftError(
+                "managed {} routing changed; review before removal or use --force".format(self.name),
+                host="codex", stage=self.name, path=str(self.routing_target),
+            )
+        prefix = manifest["prefix"].encode()
+        suffix = manifest["suffix"].encode()
+        if (content[max(0, start - len(prefix)):start] != prefix
+                or content[end:end + len(suffix)] != suffix):
+            if not self.force:
+                raise DriftError(
+                    "text surrounding the {} routing block changed; use --force to remove it".format(self.name),
+                    host="codex", stage=self.name, path=str(self.routing_target),
+                )
+            prefix = suffix = b""
+        return content[:start - len(prefix)] + content[end + len(suffix):]
+
+    def _write_routing_removal(self, transaction: FileTransaction, content: Optional[bytes]) -> None:
+        if content is None:
+            return
+        if content:
+            transaction.write_bytes(self.routing_target, content, _preserved_mode(self.routing_target))
+        else:
+            transaction.remove(self.routing_target)
 
     def _plan_deploy(
         self,
-    ) -> Tuple[bytes, bytes, Dict[str, Any], ConfigPlan, bool]:
+    ) -> Tuple[
+        bytes,
+        Optional[bytes],
+        Dict[str, Any],
+        ConfigPlan,
+        bool,
+        Dict[str, bytes],
+    ]:
         agent_source = self._read_regular(
-            self.source, label="evidence-scout", missing_ok=False
+            self.source, label=self.name, missing_ok=False
         )
-        routing_source = self._read_regular(
-            self.routing_source, label="evidence-scout routing", missing_ok=False
-        )
-        agent = self._read_regular(self.target, label="evidence-scout")
-        routing = self._read_regular(self.routing_target, label="Codex AGENTS.md")
-        bounds = _scout_bounds(routing)
+        agent = self._read_regular(self.target, label=self.name)
         manifest = self._manifest()
         catalog = (
             self._read_regular(self.catalog_target, label="Luna v2 model catalog")
-            if manifest is not None and manifest["schemaVersion"] == 2
+            if self.legacy_evidence_scout
+            and manifest is not None
+            and manifest["schemaVersion"] == 2
             else b""
         )
-        self._validate_owned(agent, routing, bounds, manifest, catalog)
+        resource_sources = {
+            target: self._read_regular(
+                source,
+                label="{} resource {}".format(self.name, target),
+                missing_ok=False,
+            )
+            for target, source in self.resource_sources.items()
+        }
+        resources = {
+            target: self._read_regular(
+                path,
+                label="{} resource {}".format(self.name, target),
+            )
+            for target, path in self.resource_targets.items()
+        }
+        self._validate_owned(agent, manifest, catalog, resources)
+        merged = self._plan_routing_removal(manifest)
         remove_catalog, remove_pointer = self._legacy_cleanup(manifest, catalog)
 
         if manifest is None and agent and agent != agent_source and not self.force:
             raise DriftError(
-                "an unmanaged evidence-scout agent already exists; use --force to replace it",
+                "an unmanaged {} agent already exists; use --force to replace it".format(
+                    self.name
+                ),
                 host="codex",
-                stage="evidence-scout",
+                stage=self.name,
                 path=str(self.target),
             )
-        block = _scout_block(routing_source)
-        if bounds is None:
-            prefix = b"" if not routing else (b"\n" if routing.endswith(b"\n") else b"\n\n")
-            suffix = b"\n"
-            merged = routing + prefix + block + suffix
-        else:
-            start, end = bounds
-            assert manifest is not None
-            prefix = str(manifest["prefix"]).encode()
-            suffix = str(manifest["suffix"]).encode()
-            merged = routing[:start] + block + routing[end:]
-
+        if manifest is None or "resources" not in manifest:
+            for target, content in resources.items():
+                if content and content != resource_sources[target] and not self.force:
+                    raise DriftError(
+                        "an unmanaged {} resource already exists; use --force to replace it".format(
+                            self.name
+                        ),
+                        host="codex",
+                        stage=self.name,
+                        path=str(self.resource_targets[target]),
+                    )
         next_manifest = {
-            "schemaVersion": 3,
-            "component": "evidence-scout",
+            "schemaVersion": self.current_schema,
+            "component": self.name,
             "version": self.version,
-            "agentTarget": "agents/evidence-scout.toml",
+            "agentTarget": "agents/{}.toml".format(self.name),
             "agentHash": _hash(agent_source),
-            "routingTarget": "AGENTS.md",
-            "routingHash": _hash(block),
-            "prefix": prefix.decode(),
-            "suffix": suffix.decode(),
         }
+        if resource_sources:
+            next_manifest["resources"] = [
+                {"target": target, "hash": _hash(resource_sources[target])}
+                for target in self.resource_sources
+            ]
         config_plan = self.config.plan(
             self._runtime_settings(),
             remove=(("model_catalog_json",),) if remove_pointer else (),
         )
-        return agent_source, merged, next_manifest, config_plan, remove_catalog
+        return (
+            agent_source,
+            merged,
+            next_manifest,
+            config_plan,
+            remove_catalog,
+            resource_sources,
+        )
 
     def _write_config(self, transaction: FileTransaction, plan: ConfigPlan) -> None:
         if not plan.changed:
@@ -580,23 +703,25 @@ class CodexEvidenceScoutDeployment:
             self.uninstall()
             return
         with installer_state(self.codex_home, dry_run=self.dry_run) as writable:
-            agent, routing, manifest, config_plan, remove_catalog = self._plan_deploy()
-            routing_mode = _preserved_mode(self.routing_target)
-            if self.override.exists():
-                print(
-                    "Warning: {} shadows global AGENTS.md; evidence-scout routing is inactive.".format(
-                        self.override
-                    ),
-                    file=sys.stderr,
-                )
+            (
+                agent,
+                routing,
+                manifest,
+                config_plan,
+                remove_catalog,
+                resources,
+            ) = self._plan_deploy()
             if not writable:
-                print("  [dry-run] install evidence-scout -> {}".format(self.target))
-                print(
-                    "  [dry-run] merge evidence-scout routing into {}".format(
-                        self.routing_target
+                print("  [dry-run] install {} -> {}".format(self.name, self.target))
+                if routing is not None:
+                    print("  [dry-run] remove obsolete {} routing block".format(self.name))
+                print("  [dry-run] disable multi-agent")
+                for target in resources:
+                    print(
+                        "  [dry-run] install {} resource -> {}".format(
+                            self.name, self.resource_targets[target]
+                        )
                     )
-                )
-                print("  [dry-run] enable multi-agent")
                 if remove_catalog:
                     print(
                         "  [dry-run] remove obsolete Luna v2 model catalog -> {}".format(
@@ -606,55 +731,60 @@ class CodexEvidenceScoutDeployment:
                 return
             with FileTransaction(self.codex_home) as transaction:
                 transaction.write_bytes(self.target, agent, 0o644)
-                transaction.write_bytes(self.routing_target, routing, routing_mode)
+                for target, content in resources.items():
+                    transaction.write_bytes(self.resource_targets[target], content, 0o644)
+                self._write_routing_removal(transaction, routing)
                 if remove_catalog:
                     transaction.remove(self.catalog_target)
                 transaction.write_json(self.manifest_path, manifest)
                 self._write_config(transaction, config_plan)
                 self.config.verify(config_plan)
                 transaction.commit()
-        print("  [ok] evidence-scout -> {}".format(self.target))
-        print("  [ok] evidence-scout routing -> {}".format(self.routing_target))
+        print("  [ok] {} -> {}".format(self.name, self.target))
+        for target in resources:
+            print(
+                "  [ok] {} resource -> {}".format(
+                    self.name, self.resource_targets[target]
+                )
+            )
+        if routing is not None:
+            print("  [ok] removed obsolete {} routing block".format(self.name))
         if remove_catalog:
             print("  [ok] removed obsolete Luna v2 model catalog")
-        print("  [ok] multi-agent enabled")
+        print("  [ok] multi-agent disabled")
 
-    def _plan_uninstall(self) -> Optional[Tuple[bytes, bool, ConfigPlan]]:
+    def _plan_uninstall(
+        self,
+    ) -> Optional[Tuple[Optional[bytes], bool, ConfigPlan, Sequence[Path]]]:
         manifest = self._manifest()
         if manifest is None:
             return None
-        agent = self._read_regular(self.target, label="evidence-scout")
-        routing = self._read_regular(self.routing_target, label="Codex AGENTS.md")
+        agent = self._read_regular(self.target, label=self.name)
         catalog = (
             self._read_regular(self.catalog_target, label="Luna v2 model catalog")
-            if manifest["schemaVersion"] == 2
+            if self.legacy_evidence_scout and manifest["schemaVersion"] == 2
             else b""
         )
-        bounds = _scout_bounds(routing)
-        self._validate_owned(agent, routing, bounds, manifest, catalog)
-        assert bounds is not None
-        start, end = bounds
-        prefix = manifest["prefix"].encode()
-        suffix = manifest["suffix"].encode()
-        if (
-            routing[max(0, start - len(prefix)):start] != prefix
-            or routing[end:end + len(suffix)] != suffix
-        ):
-            if not self.force:
-                raise DriftError(
-                    "text surrounding the evidence-scout routing block changed; use --force to remove it",
-                    host="codex",
-                    stage="evidence-scout",
-                    path=str(self.routing_target),
-                )
-            prefix = b""
-            suffix = b""
+        resources = {
+            target: self._read_regular(
+                path,
+                label="{} resource {}".format(self.name, target),
+            )
+            for target, path in self.resource_targets.items()
+        }
+        self._validate_owned(agent, manifest, catalog, resources)
+        merged = self._plan_routing_removal(manifest)
         remove_catalog, remove_pointer = self._legacy_cleanup(manifest, catalog)
         return (
-            routing[:start - len(prefix)] + routing[end + len(suffix):],
+            merged,
             remove_catalog,
             self.config.plan(
                 {}, remove=(("model_catalog_json",),) if remove_pointer else ()
+            ),
+            tuple(
+                self.resource_targets[target]
+                for target in self.resource_targets
+                if "resources" in manifest
             ),
         )
 
@@ -662,21 +792,21 @@ class CodexEvidenceScoutDeployment:
         if self.dry_run:
             plan = self._plan_uninstall()
             if plan is not None:
-                print("  [dry-run] remove evidence-scout and its routing block")
+                print("  [dry-run] remove {}".format(self.name))
+                if plan[0] is not None:
+                    print("  [dry-run] remove obsolete {} routing block".format(self.name))
             return
         with installer_state(self.codex_home, dry_run=False) as writable:
             plan = self._plan_uninstall()
             if plan is None:
                 return
-            merged, remove_catalog, config_plan = plan
-            routing_mode = _preserved_mode(self.routing_target)
+            merged, remove_catalog, config_plan, resources = plan
             assert writable
             with FileTransaction(self.codex_home) as transaction:
                 transaction.remove(self.target)
-                if merged:
-                    transaction.write_bytes(self.routing_target, merged, routing_mode)
-                else:
-                    transaction.remove(self.routing_target)
+                for resource in resources:
+                    transaction.remove(resource)
+                self._write_routing_removal(transaction, merged)
                 if remove_catalog:
                     transaction.remove(self.catalog_target)
                 transaction.remove(self.manifest_path)
@@ -684,33 +814,39 @@ class CodexEvidenceScoutDeployment:
                     self._write_config(transaction, config_plan)
                     self.config.verify(config_plan)
                 transaction.commit()
-        print("  [ok] removed evidence-scout and its routing block")
+        print("  [ok] removed {}".format(self.name))
 
     def verify(self) -> None:
         manifest = self._manifest()
         if manifest is None:
             raise InstallerError(
-                "evidence-scout manifest is missing after install",
+                "{} manifest is missing after install".format(self.name),
                 host="codex",
                 stage="verify",
             )
-        agent = self._read_regular(self.target, label="evidence-scout")
-        routing = self._read_regular(self.routing_target, label="Codex AGENTS.md")
-        bounds = _scout_bounds(routing)
-        if bounds is None:
-            raise InstallerError(
-                "evidence-scout routing block is missing after install",
-                host="codex",
-                stage="verify",
+        agent = self._read_regular(self.target, label=self.name)
+        resources = {
+            target: self._read_regular(
+                path,
+                label="{} resource {}".format(self.name, target),
             )
-        start, end = bounds
+            for target, path in self.resource_targets.items()
+        }
         if (
             _hash(agent) != manifest["agentHash"]
-            or _hash(routing[start:end]) != manifest["routingHash"]
-            or manifest["schemaVersion"] != 3
+            or manifest["schemaVersion"] != self.current_schema
+            or any(
+                not resources.get(target)
+                or _hash(resources[target])
+                != {
+                    item["target"]: item["hash"]
+                    for item in manifest.get("resources", [])
+                }.get(target)
+                for target in self.resource_targets
+            )
         ):
             raise InstallerError(
-                "evidence-scout files differ after install",
+                "{} files differ after install".format(self.name),
                 host="codex",
                 stage="verify",
             )
@@ -722,12 +858,38 @@ class CodexEvidenceScoutDeployment:
         ]
         if mismatched:
             raise InstallerError(
-                "evidence-scout runtime setting differs: {}".format(
-                    ".".join(mismatched[0])
+                "{} runtime setting differs: {}".format(
+                    self.name, ".".join(mismatched[0])
                 ),
                 host="codex",
                 stage="verify",
             )
+
+
+class CodexEvidenceScoutDeployment(CodexCustomAgentDeployment):
+    """Compatibility wrapper for the existing evidence-scout deployment."""
+
+    def __init__(
+        self,
+        source: Path,
+        codex_home: Path,
+        version: str,
+        *,
+        enabled: bool,
+        dry_run: bool = False,
+        force: bool = False,
+    ) -> None:
+        super().__init__(
+            "evidence-scout",
+            source,
+            codex_home,
+            version,
+            enabled=enabled,
+            accepted_schemas=(1, 2, 3, 4),
+            legacy_evidence_scout=True,
+            dry_run=dry_run,
+            force=force,
+        )
 
 
 def run_json(command: Sequence[str], *, stage: str) -> Dict[str, Any]:
@@ -825,40 +987,114 @@ class CodexInstaller:
             and "codex" in component.get("hosts", {})
         }
 
-    def _evidence_scout(self, *, enabled: bool) -> CodexEvidenceScoutDeployment:
+    @property
+    def agent_names(self) -> Set[str]:
+        return {
+            str(component["name"])
+            for component in self.catalog.get("components", [])
+            if component.get("kind") == "agent"
+            and "codex" in component.get("hosts", {})
+        }
+
+    def _custom_agent(
+        self,
+        name: str,
+        *,
+        enabled: bool,
+    ) -> CodexCustomAgentDeployment:
         component = next(
             (
                 item
                 for item in self.catalog.get("components", [])
-                if item.get("name") == "evidence-scout"
+                if item.get("name") == name
+                and item.get("kind") == "agent"
+                and "codex" in item.get("hosts", {})
             ),
             None,
         )
         source_value = component.get("path") if component else None
-        routing_value = component.get("routingPath") if component else None
+        resource_values = component.get("resources", []) if component else []
+        # A catalogued Scout installs from the active definition while keeping
+        # its legacy schema cleanup. If it is absent from an older catalog, the
+        # frozen fixture remains available only to remove an installed legacy
+        # Scout without depending on mutable source bytes.
+        if name == "evidence-scout":
+            source = (
+                self.repo_root / source_value
+                if isinstance(source_value, str) and source_value
+                else self.repo_root
+                / "scripts/tests/fixtures/archived-agents/evidence-scout.toml"
+            )
+            if enabled and component is None:
+                raise StateError(
+                    "evidence-scout is not available in this component catalog",
+                    host="codex",
+                    stage="component-selection",
+                )
+            return CodexEvidenceScoutDeployment(
+                source,
+                self.codex_home,
+                self.version,
+                enabled=enabled,
+                dry_run=self.dry_run,
+                force=self.force,
+            )
         if not isinstance(source_value, str) or not source_value:
             raise StateError(
-                "evidence-scout source path is missing",
+                "{} source path is missing".format(name),
                 host="codex",
-                stage="evidence-scout",
+                stage=name,
                 path=str(self.repo_root / "components.json"),
             )
-        if not isinstance(routing_value, str) or not routing_value:
+        if not isinstance(resource_values, list) or any(
+            not isinstance(item, dict)
+            or set(item) != {"source", "target"}
+            or not isinstance(item.get("source"), str)
+            or not item["source"]
+            or item["source"].startswith("/")
+            or "\\" in item["source"]
+            or any(part in {"", ".", ".."} for part in item["source"].split("/"))
+            or not isinstance(item.get("target"), str)
+            or not item["target"]
+            or item["target"].startswith("/")
+            or "\\" in item["target"]
+            or any(part in {"", ".", ".."} for part in item["target"].split("/"))
+            for item in resource_values
+        ) or len({item["target"] for item in resource_values}) != len(resource_values):
             raise StateError(
-                "evidence-scout routing path is missing",
+                "{} resources are invalid".format(name),
                 host="codex",
-                stage="evidence-scout",
+                stage=name,
                 path=str(self.repo_root / "components.json"),
             )
-        return CodexEvidenceScoutDeployment(
+        return CodexCustomAgentDeployment(
+            name,
             self.repo_root / source_value,
-            self.repo_root / routing_value,
             self.codex_home,
             self.version,
             enabled=enabled,
+            accepted_schemas=(1, 2, 4) if resource_values else (1, 4),
+            resources=tuple(
+                (self.repo_root / item["source"], item["target"])
+                for item in resource_values
+            ),
             dry_run=self.dry_run,
             force=self.force,
         )
+
+    def _evidence_scout(self, *, enabled: bool) -> CodexEvidenceScoutDeployment:
+        deployment = self._custom_agent("evidence-scout", enabled=enabled)
+        assert isinstance(deployment, CodexEvidenceScoutDeployment)
+        return deployment
+
+    def _agent_order(self) -> List[str]:
+        names = [
+            str(component["name"])
+            for component in self.catalog.get("components", [])
+            if component.get("kind") == "agent"
+            and "codex" in component.get("hosts", {})
+        ]
+        return names if "evidence-scout" in names else names + ["evidence-scout"]
 
     def _require_cli(self) -> None:
         if shutil.which("codex") is None and not self.dry_run:
@@ -1366,8 +1602,10 @@ class CodexInstaller:
                 versions[canonical] = version.strip()
         if (self.codex_home / GUIDANCE_MANIFEST).is_file():
             names.add("agents-md")
-        if (self.codex_home / EVIDENCE_SCOUT_MANIFEST).is_file():
-            names.add("evidence-scout")
+        for name in self._agent_order():
+            manifest = self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            if manifest.exists() or manifest.is_symlink():
+                names.add(name)
         return names, versions
 
     def _remove_plugin(self, plugin: Mapping[str, Any], *, stage: str) -> None:
@@ -1412,9 +1650,25 @@ class CodexInstaller:
         for plugin in self._plugins():
             self._remove_plugin(plugin, stage="reset")
         self._remove_marketplace()
-        self._evidence_scout(enabled=False).uninstall()
-        self.completed.append("reset evidence-scout")
+        existing_agents = {
+            name
+            for name in self._agent_order()
+            if (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).exists()
+            or (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).is_symlink()
+        }
+        for name in self._agent_order():
+            self._custom_agent(name, enabled=False).uninstall()
+            if name in existing_agents:
+                self.completed.append("reset {}".format(name))
         if include_template:
+            guidance_existed = (
+                (self.codex_home / GUIDANCE_MANIFEST).exists()
+                or (self.codex_home / GUIDANCE_MANIFEST).is_symlink()
+            )
             CodexGuidanceDeployment(
                 self.repo_root / "templates" / "AGENTS.md",
                 self.codex_home,
@@ -1423,7 +1677,8 @@ class CodexInstaller:
                 dry_run=self.dry_run,
                 force=self.force,
             ).uninstall()
-            self.completed.append("reset agents-md")
+            if guidance_existed:
+                self.completed.append("reset agents-md")
 
     def install(
         self,
@@ -1435,6 +1690,23 @@ class CodexInstaller:
         self._require_cli()
         desired = set(components)
         desired_plugins = sorted(desired & self.plugin_names)
+        desired_agents = [
+            name for name in self._agent_order() if name in desired
+        ]
+        guidance_existed = (
+            (self.codex_home / GUIDANCE_MANIFEST).exists()
+            or (self.codex_home / GUIDANCE_MANIFEST).is_symlink()
+        )
+        existing_agents = {
+            name
+            for name in self._agent_order()
+            if (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).exists()
+            or (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).is_symlink()
+        }
         if reset:
             self.reset(include_template=include_template)
 
@@ -1457,15 +1729,31 @@ class CodexInstaller:
             dry_run=self.dry_run,
             force=self.force,
         ).deploy()
-        self.completed.append(
-            "installed agents-md" if "agents-md" in desired else "removed agents-md"
-        )
-        self._evidence_scout(enabled="evidence-scout" in desired).deploy()
-        self.completed.append(
-            "installed evidence-scout"
-            if "evidence-scout" in desired
-            else "removed evidence-scout"
-        )
+        if "agents-md" in desired:
+            self.completed.append("installed agents-md")
+        elif guidance_existed:
+            self.completed.append("removed agents-md")
+        # Install every desired custom agent before removing excluded agents.
+        # Each deployment owns its own transaction, so a later agent failure
+        # does not roll back an earlier successful component.
+        for name in desired_agents:
+            self._custom_agent(name, enabled=True).deploy()
+            self.completed.append("installed {}".format(name))
+        for name in self._agent_order():
+            if name in desired:
+                continue
+            self._custom_agent(name, enabled=False).uninstall()
+            if name in existing_agents:
+                self.completed.append("removed {}".format(name))
+        # Apply the same feature policy even when no optional agent is selected.
+        with installer_state(self.codex_home, dry_run=self.dry_run):
+            config = CodexConfigEditor(
+                self.codex_home,
+                dry_run=self.dry_run,
+                managed_keys=tuple(SUBAGENT_SETTINGS),
+                stage="install-subagent-settings",
+            )
+            config.apply(config.plan(SUBAGENT_SETTINGS), show_diff=False)
         if not self.dry_run:
             self.verify(desired)
 
@@ -1477,11 +1765,18 @@ class CodexInstaller:
         }
         expected_plugins = desired & self.plugin_names
         guidance = (self.codex_home / GUIDANCE_MANIFEST).is_file()
-        scout = (self.codex_home / EVIDENCE_SCOUT_MANIFEST).is_file()
+        installed_agents = {
+            name
+            for name in self._agent_order()
+            if (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).is_file()
+        }
+        expected_agents = desired & self.agent_names
         if (
             set(actual_plugins) != expected_plugins
             or guidance != ("agents-md" in desired)
-            or scout != ("evidence-scout" in desired)
+            or installed_agents != expected_agents
         ):
             raise InstallerError(
                 "Codex post-install state does not match the requested components",
@@ -1504,13 +1799,28 @@ class CodexInstaller:
                     stage="verify",
                 )
             self._validate_plugin_install(component, result)
-        if "evidence-scout" in desired:
-            self._evidence_scout(enabled=True).verify()
+        for name in self._agent_order():
+            if name in expected_agents:
+                self._custom_agent(name, enabled=True).verify()
 
     def uninstall(self) -> None:
         self._require_cli()
         for plugin in self._plugins():
             self._remove_plugin(plugin, stage="uninstall")
+        guidance_existed = (
+            (self.codex_home / GUIDANCE_MANIFEST).exists()
+            or (self.codex_home / GUIDANCE_MANIFEST).is_symlink()
+        )
+        existing_agents = {
+            name
+            for name in self._agent_order()
+            if (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).exists()
+            or (
+                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            ).is_symlink()
+        }
         CodexGuidanceDeployment(
             self.repo_root / "templates" / "AGENTS.md",
             self.codex_home,
@@ -1519,9 +1829,12 @@ class CodexInstaller:
             dry_run=self.dry_run,
             force=self.force,
         ).uninstall()
-        self.completed.append("removed agents-md")
-        self._evidence_scout(enabled=False).uninstall()
-        self.completed.append("removed evidence-scout")
+        if guidance_existed:
+            self.completed.append("removed agents-md")
+        for name in self._agent_order():
+            self._custom_agent(name, enabled=False).uninstall()
+            if name in existing_agents:
+                self.completed.append("removed {}".format(name))
         if not self.dry_run and self.current_components():
             raise InstallerError(
                 "Codex uninstall left managed components behind",

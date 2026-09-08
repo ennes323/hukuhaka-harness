@@ -1,342 +1,212 @@
 # hukuhaka-harness
 
-A small distribution of coding-agent workflows for Claude Code and Codex. Each
-component declares its supported host explicitly; sharing a repository does not
-imply that a Claude Code plugin is portable to Codex.
+A Codex-first collection of evidence-grounded planning, project maintenance,
+and UI/UX workflows. Components are packaged for Codex and keep their
+repository-specific boundaries explicit.
 
 ## Who this is for
 
-- You use Claude Code, Codex, or both and want reusable workflows with honest host boundaries.
-- You want evidence-backed document planning to constrain artifact construction.
-- You need a Claude-to-Codex collaboration harness without pretending it is a native Codex plugin.
+- You want reusable Codex workflows that inspect current source before acting.
+- You need evidence-backed document planning before artifact construction.
+- You want repeatable validation, isolated evaluation, and safe local Git work.
 
-## What's in the bundle
+## Included components
 
-| Component | Version | Status | Hosts | What it gives you |
-|-----------|---------|--------|-------|-------------------|
-| **hukuhaka-report-planner** | `0.6.0` | Supported | Claude Code, Codex | Frames and structures visual-document requests, directs source-backed anchor construction, and records a finalized `spec.md`. Explicit plan requests stop there; artifact requests delegate construction and visual verification to one designer subagent. |
-| **hukuhaka-engineering-plan** | `0.2.2` | Supported | Claude Code, Codex | Produces repository-grounded implementation plans with closed impact surfaces, exact change deltas, and requirement-to-verification mapping. |
-| **hukuhaka-worklog** | `0.4.0` | Supported | Claude Code, Codex | Reads current work at the first non-trivial project task, tracks lifecycle changes from natural requests, records completed or closed outcomes, keeps the newest 25 history entries automatically, and runs setup, status, and recovery archive commands before model invocation. |
-| **hukuhaka-memory-audit** | `0.1.0` | Supported | Codex only | Audits local Codex memory against current engineering evidence and suggests cleanup once the always-loaded summary or supporting store crosses a review threshold. |
-| **hukuhaka-codex** | `0.4.1` | Supported | Claude Code only | Claude Code plugin that delegates planning, review, debate, and transfer work to the Codex runtime. It is not installed into Codex itself. |
-| **CLAUDE.md template** | — | Supported | Claude Code only | Shared scoped-change and verification policy with Claude-specific `spec.md` sign-off and attribution-free commits, deployed to `~/.claude/CLAUDE.md`. |
-| **AGENTS.md template** | — | Supported | Codex only | Codex policy for grounded responses to user challenges, scoped change previews, evidence-backed verification, compact-resilient task state, and a safe local Git lifecycle, merged into `$CODEX_HOME/AGENTS.md`. |
-| **Evidence Scout** | — | Supported | Codex only | Installs a Luna max, read-only custom agent plus compact routing guidance for dynamic parallel repository exploration while the primary retains decisions, writes, and final verification. |
+| Component | Version | Status | What it provides |
+|-----------|---------|--------|------------------|
+| **hukuhaka-report-planner** | <code>0.7.2</code> | Supported | Finalizes evidence-backed content in <code>spec.md</code>; artifact requests hand representation, design, construction, and visual verification to one designer. |
+| **hukuhaka-engineering-plan** | <code>0.2.3</code> | Supported | Produces repository-grounded, decision-complete implementation plans with closed impact surfaces and exact verification mapping. |
+| **hukuhaka-worklog** | <code>0.4.1</code> | Supported | Tracks current work, records durable completion or closure history, and runs lifecycle checks before model invocation. |
+| **hukuhaka-memory-audit** | <code>0.1.0</code> | Supported, optional | Audits generated Codex memory against current engineering evidence and proposes approval-gated cleanup. |
+| **hukuhaka-project-docs** | <code>0.1.3</code> | Experimental / opt-in | Codex-only authority indexes that route the primary agent to selected source documents for reconciliation. |
+| **hukuhaka-uiux-foundation** | <code>0.1.0</code> | Supported | Grounds user-visible frontend and UI/UX work in existing design authority and verifies rendered responsive and accessible behavior. |
+| **AGENTS.md template** | — | Supported | Supplies the managed Codex instruction block while preserving user content outside the block. |
+| **Worker** | — | Supported, optional | Uses Sol medium for bounded implementation, investigation, and independent review. |
+| **Result Runner** | — | Supported, optional | Uses Luna xhigh to execute supplied commands and report completion and exit evidence. |
+| **Evidence Scout** | — | Supported, optional | Uses Luna xhigh in a read-only sandbox to collect evidence for bounded source questions. |
+| **Project Doc Reader** | — | Experimental / opt-in | Provides a Codex-only, manifest-gated, read-only custom agent for selected project documents. |
+
+The version values above come from the native Codex manifests. The repository
+version and plugin versions are separate; this documentation change does not
+prepare or publish a release.
+
+## Requirements
+
+- macOS or Linux
+- Python 3.9+ as <code>python3</code>
+- <code>bash</code> and <code>curl</code> for remote bootstrap
+- Codex CLI as <code>codex</code>
+
+Native Windows and WSL are outside the tested support matrix.
 
 ## Install
 
-The public installer detects Claude Code and Codex, shows only the hosts that
-are installed, and applies each selected host independently. Automation always
-names exactly one host; there is no implicit default host or `both` command.
+From a checkout:
 
-### Requirements and support
+~~~bash
+./scripts/install.sh codex install --recommended --yes
+~~~
 
-| Requirement | Support contract |
-|-------------|------------------|
-| Operating system | macOS or Linux |
-| Python | Python 3.9+ available as `python3`; Python 2 is unsupported |
-| Bootstrap | `bash` and `curl` for remote installation |
-| Claude Code host | `claude` CLI |
-| Codex host | `codex` CLI |
-| Windows | Native Windows is unsupported; WSL is not yet part of the tested matrix |
+A zero-argument interactive run detects Codex and presents the managed
+component state. Automation names the Codex operation explicitly:
 
-The installer uses only the Python standard library. If `python3` is missing,
-the bootstrap prints the appropriate package-manager command.
-
-Claude Code deployment is transactional: registry JSON is validated before
-files change, writes are atomic, interrupted runs are recovered on the next
-install, and locally modified managed files require an explicit `--force`.
-
-The Claude and Codex instruction templates are separate sources. Both
-distinguish analysis from mutation authority, preserve pre-existing work, and
-keep push and other external actions explicitly opt-in. The Claude template
-additionally protects `spec.md` contracts and attribution-free commits. The
-Codex installer merges only a marked managed block into
-`$CODEX_HOME/AGENTS.md`, preserves user text outside that block, and removes
-only the managed block on uninstall. `CODEX_HOME` defaults to `~/.codex`.
-
-### Interactive install
-
-```bash
-# From a clone:
-./scripts/install.sh
-
-# From the public repository:
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/hukuhaka/hukuhaka-harness/main/scripts/install.sh)"
-```
-
-The installer uses an arrow-key terminal selector on standard input/output:
-Up/Down moves, Space selects, and Enter applies. It detects the `claude` and
-`codex` CLIs and shows only available hosts. A component checkbox is the final
-desired state: selected managed components are installed or updated and
-unselected installed components are removed. Each host can reset managed
-plugins and skills before installing; template reset remains a separate
-choice. Claude is applied before Codex, and an independent Codex operation is
-still attempted if Claude fails.
-
-Plugin checkboxes show the target plugin version from the selected host
-manifest. Before confirmation, the installation plan compares each selected
-plugin's currently registered version with that target. Templates and features
-remain unversioned.
-
-Codex also offers an opt-in `Configure global Codex defaults` choice. It is
-unchecked by default. Selecting Evidence Scout applies only its required
-multi-agent enablement; it does not change agent concurrency, nesting, the primary
-model, model catalog, or unrelated agent defaults. Reset and uninstall preserve
-those runtime settings, memory, and unrelated Claude settings. Updating a
-schema-v2 Evidence Scout install removes only its manifest-owned obsolete Luna
-catalog and exact config pointer.
-
-The interactive command uses `bash -c` so stdin remains attached to the
-terminal. `curl ... | bash` remains supported for explicit non-interactive
-flags, but cannot accept arrow-key input because the script itself occupies
-stdin.
-
-Without a TTY, a zero-argument run exits with guidance and changes nothing.
-If neither host CLI is installed, the interactive installer also changes
-nothing and exits nonzero.
-
-### Claude Code
-
-For automation, `--recommended` selects supported catalog defaults and
-`--components` declares the complete desired component state:
-
-```bash
-./scripts/install.sh claude install --recommended --yes
-./scripts/install.sh claude install \
-  --components hukuhaka-report-planner,hukuhaka-engineering-plan,hukuhaka-worklog,hukuhaka-codex,claude-md \
-  --yes
-./scripts/install.sh claude reset --recommended --include-template --yes
-./scripts/install.sh claude uninstall --yes
-```
-
-The installer honors `CLAUDE_CONFIG_DIR`, verifies the resulting user plugins
-through `claude plugin list --json`, and rolls back the Claude transaction if
-the native version, enabled state, or install path does not match. Run
-`/reload-plugins` in an existing Claude Code session after a successful update.
-
-### Codex
-
-Codex has the same component lifecycle:
-
-```bash
+~~~bash
 ./scripts/install.sh codex install --recommended --yes
 ./scripts/install.sh codex reset --recommended --include-template --yes
 ./scripts/install.sh codex uninstall --yes
-```
+~~~
 
-`--recommended` includes Evidence Scout. The same install creates
-`$CODEX_HOME/agents/evidence-scout.toml`, merges a separately owned routing
-block into `$CODEX_HOME/AGENTS.md`, and enables multi-agent execution. It leaves
-agent concurrency and nesting under user control and leaves `models_cache.json`
-untouched and relies on Codex's native Luna subagent support; it does not create
-or select a model catalog. Codex uses one scout per genuinely independent
-read-only scope and may use fewer than the configured capacity. An
-existing byte-identical personal scout is adopted; a conflicting unmanaged
-agent file is preserved unless `--force` is explicit. User-owned model-catalog
-pointers are always left unchanged.
-If `$CODEX_HOME/AGENTS.override.md` exists, Codex gives it precedence over the
-global `AGENTS.md`; installation succeeds but warns that scout routing is
-inactive until that override is removed or carries equivalent routing guidance.
+<code>--components</code> declares the complete desired managed set;
+<code>--recommended</code> selects catalog defaults; <code>--dry-run</code>
+writes no files and runs no mutating host command. Repeated installation and
+removal are intended to be idempotent. Review the plan before confirming a
+mutation.
 
-Remote installs keep the marketplace pinned to the resolved harness release.
-When the same official Git marketplace is registered at an older release, the
-installer replaces that ref automatically and restores the previous commit if
-the update fails. Local, forked, and otherwise different sources are preserved
-and rejected instead of being repointed.
+Worker, Result Runner, and Evidence Scout are optional and excluded from
+recommended installs. Select them explicitly with a complete component set:
 
-Remote automation passes the same host-first arguments:
+~~~bash
+./scripts/install.sh codex install --components agents-md,astra_worker,result-runner,evidence-scout --yes
+~~~
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/hukuhaka/hukuhaka-harness/main/scripts/install.sh \
-  | bash -s -- codex install --recommended --yes
-```
+Unmodified managed agents absent from the new desired set are removed; locally
+edited files are preserved as conflicts. Worker uses Sol medium for bounded
+implementation, investigation, and independent review. Runner uses Luna xhigh
+for supplied commands and result reporting. Scout uses Luna xhigh in a read-only
+sandbox for bounded evidence collection.
+The Worker retains the <code>astra_worker</code> identifier for installation and
+existing task compatibility; its model is Sol.
+The common <code>agents-md</code> template provides routing guidance. Agent
+installation alone does not add instructions to global <code>AGENTS.md</code>.
+Upgrades remove unmodified routing blocks owned by older installers; edited
+legacy blocks remain conflicts and unrelated guidance is preserved.
 
-Modified managed files stop replacement unless `--force` is explicitly
-supplied. `--dry-run` takes no installer lock, writes no file, and runs no
-mutating host command.
+The retired Scout definition remains frozen under
+<code>scripts/tests/fixtures/archived-agents/</code> for legacy manifest, drift,
+and removal checks. New explicit installs use the active definition under
+<code>agents/</code> and do not install a model catalog or global routing block.
 
-The equivalent native Codex commands are:
+Inspect or explicitly remove global child model defaults:
 
-```bash
+~~~bash
+./scripts/install.sh codex agents model inspect
+./scripts/install.sh codex agents model inherit --dry-run
+./scripts/install.sh codex agents model inherit --yes
+~~~
+
+The transition removes only <code>agents.default_subagent_model</code> and
+<code>agents.default_subagent_reasoning_effort</code>, with a backup and validated
+transaction. It preserves parent settings, capacity, and role-specific pins.
+Ordinary installation does not perform this transition. Inspect reports saved
+settings; child execution records establish the actual model.
+
+## Native plugin commands
+
+~~~bash
 codex plugin marketplace add hukuhaka/hukuhaka-harness
 codex plugin add hukuhaka-report-planner@hukuhaka-harness
 codex plugin add hukuhaka-engineering-plan@hukuhaka-harness
 codex plugin add hukuhaka-worklog@hukuhaka-harness
 codex plugin add hukuhaka-memory-audit@hukuhaka-harness
-```
+codex plugin add hukuhaka-project-docs@hukuhaka-harness
+codex plugin add hukuhaka-uiux-foundation@hukuhaka-harness
+~~~
 
-The native marketplace command follows the repository state selected by Codex
-and is convenient for local development. For a reproducible release-equivalent
-install, use `scripts/install.sh`; remote installer runs resolve and pin the
-matching `vX.Y.Z` harness tag and restore the previous ref if an update fails.
+The marketplace exposes native Codex packages. The repository installer also
+manages the global <code>AGENTS.md</code> block and optional custom-agent
+files. Start a new Codex task after installing or updating a plugin when
+discovery or hook state needs to reload.
 
-The Codex marketplace intentionally exposes only the components with native
-Codex packaging. Invoke the document planner as `$hukuhaka-report-planner`, the
-engineering planner as `$engineering-plan`, and the worklog as
-`$hukuhaka-worklog:worklog`. The optional memory audit uses
-`$codex-memory-audit`; it is available from the marketplace but is not selected
-by `--recommended`. Codex can otherwise select installed Skills from their descriptions.
-The `agents-md` template and Evidence Scout are installed by this repository's
-host-aware installer rather than the native plugin marketplace.
+## Common workflows
 
-### Global Codex defaults
+Report planning:
 
-```bash
+~~~text
+$hukuhaka-report-planner
+~~~
+
+Engineering planning:
+
+~~~text
+$engineering-plan
+~~~
+
+Worklog lifecycle:
+
+~~~text
+$hukuhaka-worklog:worklog
+~~~
+
+The report planner first finalizes a content-only
+<code>.hukuhaka/reports/&lt;short-name&gt;/spec.md</code>. When an artifact is
+requested, one designer chooses representations, owns the sibling
+<code>design.md</code>, builds the artifact, and reports visual verification.
+Planning and design are separate responsibilities; the spec remains read-only
+during design.
+
+The engineering planner inspects current source, defines observable behavior,
+stress-tests important invariants, and maps each requirement to evidence.
+An explicit planning request ends with a read-only plan. For an implementation
+request, planning is a read-only phase; once material decisions are resolved,
+the agent continues through the authorized implementation and verification.
+Routine disclosed assumptions do not create a new approval gate.
+Worklog keeps current work and durable history in host-neutral files.
+
+## Optional Codex settings and agents
+
+~~~bash
 ./scripts/install.sh codex configure
-./scripts/install.sh codex configure --recommended --yes
-```
-
-The configurator edits only global `$CODEX_HOME/config.toml` (default
-`~/.codex/config.toml`). It does not set a model and does not change sandbox,
-approval, web search, MCP, provider, profile, or project configuration. It
-shows a unified diff, preserves unmanaged keys, comments, order, and file mode,
-and stores the previous file as `config.toml.hukuhaka-backup`. Unsafe duplicate
-managed keys and inline managed tables are rejected before writing. After an
-atomic replacement, `codex doctor --json` must report `config.load` as `ok` or
-the original file is restored. See the
-[Codex configuration reference](https://developers.openai.com/codex/config-reference/).
-Evidence Scout installation reuses the same parser, preservation rules, and
-`codex doctor` validation for its two multi-agent enablement keys; users do not
-need to run `codex configure` separately.
-
-### Codex agent execution policy
-
-```bash
 ./scripts/install.sh codex agents
-./scripts/install.sh codex agents set --max-concurrent 8 --max-depth 1 --yes
+./scripts/install.sh codex agents set --max-concurrent <threads> --max-depth <depth> --yes
 ./scripts/install.sh codex agents reset --yes
-```
+~~~
 
-Agent capacity is independent from component installation and global defaults.
-The interactive installer exposes **Configure agent concurrency & nesting**
-under Settings and shows whether the current values are Codex defaults,
-Hukuhaka-managed, user-managed, or drifted. A set operation owns only
-`agents.max_concurrent_threads_per_session` and `agents.max_depth` through
-`.hukuhaka-agent-policy.json`; reset removes only those recorded overrides.
-Existing unmanaged values and managed drift fail closed without mutation.
-Older Evidence Scout installs that still carry their exact managed ceiling of
-four are adopted when their manifest proves the source. The legacy
-`agents.max_threads` spelling is normalized during that migration. Codex CLI
-currently treats `max_depth` as V1-only and ignores it under V2, so every
-interactive and non-interactive set flow displays that warning.
+Installation and recommended configuration disable subagents with
+<code>features.multi_agent = false</code>, including reinstalling optional agents.
+The global guidance contains no subagent routing. Optional role files are retained
+for later use. Other settings and agent capacity remain separate from plugin
+installation, preserving unmanaged configuration. Worker may edit
+assigned files, Result Runner executes supplied commands, and Evidence Scout and
+Project Doc Reader remain read-only. The primary owns scope and final acceptance.
 
-## Report planner workflow
+Recommended Codex settings set the agent-wait minimum and default to 120 seconds
+through <code>features.multi_agent_v2.min_wait_timeout_ms</code> and
+<code>features.multi_agent_v2.default_wait_timeout_ms</code>. Completion or new
+user input can return early. These settings do not lengthen command execution
+waits. Ordinary agent installation preserves this separate runtime policy.
 
-The same skill tree is used by both hosts:
+## Verification and evaluation
 
-```text
-Claude Code: /hukuhaka-report-planner:hukuhaka-report-planner
-Codex:       $hukuhaka-report-planner
-```
+Run public-checkout validation and focused contracts:
 
-Both write `.hukuhaka/reports/<short-name>/spec.md`, a host-neutral compatibility
-contract that either host can consume. Existing `.claude/reports/` plans remain a
-read-only fallback. The shared workflow discovers the reader job and evidence, explores
-the document structure, directs source-backed anchor construction, then locks a
-selective-reference build contract. Explicit planning requests stop at the finalized spec; immediate
-artifact requests use it as a preflight and delegate construction plus visual
-verification to one designer subagent.
+~~~bash
+scripts/validate.sh --profile public
+python3 scripts/tests/document_contracts.py
+python3 -m unittest discover -s scripts/tests
+~~~
 
-## Engineering plan workflow
+Maintainers use <code>--profile private</code> in the private source checkout.
+Validation reports suite durations and uses two workers by default; set
+<code>VALIDATE_JOBS=1</code> for serial execution (1–4 are supported).
+To test the installed Codex CLI separately, run
+<code>scripts/validate.sh --live-cli</code>. It requires the CLI and local model
+cache and performs its lifecycle checks in a temporary home. Ordinary validation
+does not activate this live check based on what happens to be installed.
 
-The same portable Skill is packaged for both hosts:
+Run an isolated case with Eval v2:
 
-```text
-Claude Code: /hukuhaka-engineering-plan:engineering-plan
-Codex:       $engineering-plan
-```
+~~~bash
+python3 eval/run.py run --case <case-id> --host codex --model <model>
+~~~
 
-It inspects the repository before planning, defines observable behavior before
-file changes, challenges important invariants with concrete counterexamples,
-revises contradictions in the main plan, and closes planning with `Ready`,
-`Ready with assumptions`, or `Blocked`. Explicit planning-only requests and
-Plan mode remain read-only. An authorized implementation request continues
-through implementation and required verification once planning and applicable
-approval gates are complete; routine assumptions do not add an approval gate.
+Mechanical results do not replace human review. For visual artifacts, inspect
+the rendered output for every affected viewport and state; an unavailable
+browser or renderer is reported as unavailable.
 
-## Worklog workflow
+## Documentation and license
 
-The same lifecycle Skill and mechanical commands are packaged for both hosts:
+Maintainer contracts live in the private <code>docs/</code> tree and are not
+part of the public checkout. Public users should follow the commands and
+official links in this README.
 
-```text
-Claude Code: /hukuhaka-worklog:worklog <setup|status|archive>
-Codex:       $hukuhaka-worklog:worklog <setup|status|archive>
-```
-
-The exact setup, status, and archive forms are intercepted by a
-`UserPromptSubmit` hook, run the bundled standard-library script, and stop
-before model invocation. When both files exist, the managed project instruction
-reads `work.md` before the first non-trivial project task in a new session and
-loads history only when resuming, completing, closing, or checking a prior
-decision. Natural lifecycle changes invoke the model Skill automatically;
-analysis, implementation planning, routine one-off edits, and mechanical
-commands do not update lifecycle state. Missing files never block automatic
-use or get created by the model, while an explicit Worklog request directs the
-user to setup. Only the primary agent writes Worklog state. Uncommitted,
-staged, or untracked records do not prevent updates: existing notes and
-unrelated entries are preserved, and only an item with a conflicting meaning
-or user intent is left unchanged. The lifecycle report states whether recording
-succeeded, needed no update, or was blocked and why. Setup creates the host-neutral
-`.hukuhaka/{work,changelog}.md` files and replaces only its managed block in the
-current host's project instruction file (`CLAUDE.md` or `AGENTS.md`). It never
-reads or migrates a legacy `backlog.md`.
-
-After a completion or closure, the Skill runs the bundled deterministic archive
-operation. It leaves `Recent` unchanged through 25 entries and moves older
-entries to monthly `changelog/YYYY-MM.md` files once the count exceeds 25. The
-exact `worklog archive` command remains available as an idempotent recovery or
-maintenance operation.
-
-After installing the Codex plugin, open `/hooks`, review the worklog hook, and
-trust it before using the mechanical commands. Codex skips untrusted plugin
-hooks; if an exact command reaches the model, review its trust state and retry
-instead of asking the Skill to emulate setup. See
-[Review and trust hooks](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
-
-Compatibility alias: `$worklog <setup|status|archive>` remains accepted since
-`hukuhaka-worklog@0.2.2`, but generated instructions and documentation use the
-canonical plugin-qualified identity.
-
-## Codex memory audit
-
-`$codex-memory-audit` inspects the generated files under
-`${CODEX_HOME:-~/.codex}/memories/`, verifies drift-prone engineering claims
-against current source and runtime evidence, and proposes `KEEP`, `CONDENSE`,
-`SUPERSEDE`, or `DELETE` actions. It never hand-edits generated memory files.
-Cleanup remains pending until the user approves the exact proposal and a
-supported memory-management surface confirms the result.
-
-An optional `SessionStart` hook checks `startup` and `resume` without parsing
-memory semantics. It suggests the Skill when `memory_summary.md` reaches 25 KiB
-or 200 physical lines, or when `MEMORY.md` reaches 1 MiB or rollout summaries
-reach 300 files. The hook emits an English `systemMessage` once per pressure
-transition, writes only its suppression state under `PLUGIN_DATA`, and becomes
-eligible to warn again after memory returns below the thresholds.
-
-After installing the plugin, open `/hooks`, review the memory-pressure hook,
-and trust it if you want the optional suggestion. The Skill itself remains
-available even when the hook is untrusted or hooks are disabled.
-
-## Design principles
-
-- **Host support is explicit.** A component is published for a host only when its native package and validation exist.
-- **One portable workflow core.** Dual-host components share skill content and keep host-specific manifests at the boundary.
-- **Plan before build.** Report framing, figures, and structure are agreed before a separate builder creates the artifact.
-- **Idempotent install.** Detect state → install/skip/remove the delta. Re-runs are safe.
-
-## Dependencies
-
-| | Required | Optional |
-|--|----------|----------|
-| **Base** | Python 3.9+ (`python3`), `bash`; `curl` for remote bootstrap | `git` |
-| **Codex host** | `codex` | — |
-| **Extras** | — | `brew` (rtk on macOS), `node`/`npx` (ccstatusline) |
-
-The installer's preflight check enumerates these per selected component and offers to auto-install via the detected package manager.
-
-## License
-
-This repository is MIT-licensed except for `marketplace/hukuhaka-codex`, an
-Apache-2.0 derivative of OpenAI's Codex plugin for Claude Code. See the root
-[LICENSE](LICENSE) and the plugin's `LICENSE` and `NOTICE` files.
+The repository is MIT-licensed. See [LICENSE](LICENSE).

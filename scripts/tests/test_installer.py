@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import io
 import json
 import stat
@@ -11,15 +12,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.install.claude import ClaudeDeployment, resolve_claude_config_dir
 from scripts.install.codex import CodexGuidanceDeployment, CodexInstaller
 from scripts.install.common import (
     DriftError,
     FileTransaction,
     InstallerError,
-    InstallerLock,
     StateError,
-    sha256_file,
 )
 from scripts.install.main import (
     HostComponentState,
@@ -31,176 +29,31 @@ from scripts.install.terminal import HostInstallPlan, prompt_install_plan
 
 
 ROOT = Path(__file__).resolve().parents[2]
-COMPONENTS = ["hukuhaka-report-planner", "hukuhaka-codex", "claude-md"]
 
 
-class InstallerTestCase(unittest.TestCase):
+class FileTransactionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(prefix="hukuhaka installer ")
-        self.home = Path(self.temp.name)
-        self.native_plugins = mock.patch.object(
-            ClaudeDeployment,
-            "_native_plugins",
-            side_effect=self._registered_claude_plugins,
-        )
-        self.native_plugins.start()
+        self.temp = tempfile.TemporaryDirectory(prefix="hukuhaka transaction ")
+        self.state_root = Path(self.temp.name) / "state"
+        self.state_root.mkdir()
 
     def tearDown(self) -> None:
-        self.native_plugins.stop()
         self.temp.cleanup()
 
-    def _registered_claude_plugins(self) -> list[dict]:
-        installed_path = self.claude / "plugins" / "installed_plugins.json"
-        settings_path = self.claude / "settings.json"
-        installed = (
-            json.loads(installed_path.read_text(encoding="utf-8"))
-            if installed_path.is_file()
-            else {"plugins": {}}
-        )
-        settings = (
-            json.loads(settings_path.read_text(encoding="utf-8"))
-            if settings_path.is_file()
-            else {}
-        )
-        enabled = settings.get("enabledPlugins", {})
-        result = []
-        for plugin_id, entries in installed.get("plugins", {}).items():
-            if not isinstance(entries, list) or not entries:
-                continue
-            entry = dict(entries[0])
-            entry.update(
-                {
-                    "id": plugin_id,
-                    "enabled": enabled.get(plugin_id) is True,
-                }
-            )
-            result.append(entry)
-        return result
-
-    @property
-    def claude(self) -> Path:
-        return self.home / ".claude"
-
-    @property
-    def manifest(self) -> Path:
-        return self.claude / ".hukuhaka-manifest.json"
-
-    def deployment(self, *, force: bool = False, dry_run: bool = False) -> ClaudeDeployment:
-        return ClaudeDeployment(ROOT, self.claude, COMPONENTS, force=force, dry_run=dry_run)
-
-    def test_fresh_reinstall_and_uninstall_are_idempotent(self) -> None:
-        self.deployment().deploy()
-        first = json.loads(self.manifest.read_text())
-        self.deployment().deploy()
-        second = json.loads(self.manifest.read_text())
-        self.assertEqual(first["files"], second["files"])
-        self.assertEqual(first["hashes"], second["hashes"])
-        self.assertEqual(2, second["schemaVersion"])
-        self.deployment(force=True).uninstall(confirm=False)
-        self.assertFalse(self.manifest.exists())
-        self.deployment(force=True).uninstall(confirm=False)
-
-    def test_legacy_partial_state_converges_when_dropped_dirs_are_absent(self) -> None:
-        self.claude.mkdir(parents=True)
-        self.manifest.write_text(
-            json.dumps(
-                {
-                    "version": "1.0.9",
-                    "components": ["hukuhaka-ltm", "hukuhaka-project-mapper"],
-                    "files": [],
-                }
-            )
-        )
-        self.deployment().deploy()
-        manifest = json.loads(self.manifest.read_text())
-        self.assertEqual(2, manifest["schemaVersion"])
-        self.assertEqual(set(COMPONENTS), set(manifest["components"]))
-
-    def test_malformed_registry_fails_before_file_mutation(self) -> None:
-        self.claude.mkdir(parents=True)
-        (self.claude / "settings.json").write_text("{broken")
-        with self.assertRaises(StateError):
-            self.deployment().deploy()
-        self.assertFalse((self.claude / "CLAUDE.md").exists())
-        self.assertEqual("{broken", (self.claude / "settings.json").read_text())
-
-    def test_malformed_manifest_fields_fail_before_file_mutation(self) -> None:
-        self.claude.mkdir(parents=True)
-        self.manifest.write_text(json.dumps({"schemaVersion": 2, "files": {}, "hashes": []}))
-        with self.assertRaises(StateError):
-            self.deployment().deploy()
-        self.assertFalse((self.claude / "CLAUDE.md").exists())
-
-    def test_managed_file_drift_requires_force(self) -> None:
-        self.deployment().deploy()
-        target = self.claude / "CLAUDE.md"
-        target.write_text("user edit\n")
-        with self.assertRaises(DriftError):
-            self.deployment().deploy()
-        self.assertEqual("user edit\n", target.read_text())
-        self.deployment(force=True).deploy()
-        self.assertNotEqual("user edit\n", target.read_text())
-
-    def test_apply_failure_rolls_back_files_and_manifest(self) -> None:
-        self.deployment().deploy()
-        target = self.claude / "CLAUDE.md"
-        target.write_text("pre-transaction edit\n")
-        original_manifest = self.manifest.read_bytes()
-        deployment = self.deployment(force=True)
-        with mock.patch.object(
-            deployment,
-            "_write_registries",
-            side_effect=InstallerError("injected registry failure"),
-        ):
-            with self.assertRaises(InstallerError):
-                deployment.deploy()
-        self.assertEqual("pre-transaction edit\n", target.read_text())
-        self.assertEqual(original_manifest, self.manifest.read_bytes())
-
-    def test_reset_install_failure_restores_the_previous_install(self) -> None:
-        self.deployment().deploy()
-        original_manifest = self.manifest.read_bytes()
-        target = self.claude / "CLAUDE.md"
-        original_target = target.read_bytes()
-        deployment = self.deployment(force=True)
-        with mock.patch.object(
-            deployment,
-            "_write_registries",
-            side_effect=InstallerError("injected reset failure"),
-        ):
-            with self.assertRaises(InstallerError):
-                deployment.deploy(reset=True, reset_template=True)
-        self.assertEqual(original_manifest, self.manifest.read_bytes())
-        self.assertEqual(original_target, target.read_bytes())
-
     def test_pending_transaction_is_recovered_on_next_run(self) -> None:
-        self.claude.mkdir(parents=True)
-        target = self.claude / "settings.json"
+        target = self.state_root / "settings.json"
         target.write_text("old\n")
-        transaction = FileTransaction(self.claude)
+        transaction = FileTransaction(self.state_root)
         transaction.__enter__()
         transaction.write_bytes(target, b"new\n")
         self.assertEqual("new\n", target.read_text())
-        self.assertEqual(1, FileTransaction.recover_pending(self.claude))
+        self.assertEqual(1, FileTransaction.recover_pending(self.state_root))
         self.assertEqual("old\n", target.read_text())
 
-    def test_uninstall_recovers_before_manifest_noop_check(self) -> None:
-        deployment = self.deployment(force=True)
-        deployment.deploy()
-        transaction = FileTransaction(deployment.claude_dir)
-        transaction.__enter__()
-        transaction.remove(deployment.manifest_path)
-
-        deployment.uninstall(confirm=False)
-
-        self.assertFalse(self.manifest.exists())
-        self.assertFalse((self.claude / "CLAUDE.md").exists())
-
     def test_snapshot_is_not_journaled_until_backup_exists(self) -> None:
-        self.claude.mkdir(parents=True)
-        target = self.claude / "settings.json"
+        target = self.state_root / "settings.json"
         target.write_text("old\n")
-        transaction = FileTransaction(self.claude)
+        transaction = FileTransaction(self.state_root)
         transaction.__enter__()
         with mock.patch("shutil.copy2", side_effect=OSError("injected backup failure")):
             with self.assertRaises(OSError):
@@ -210,26 +63,22 @@ class InstallerTestCase(unittest.TestCase):
         transaction.__exit__(None, None, None)
 
     def test_failed_rollback_keeps_recovery_evidence(self) -> None:
-        self.claude.mkdir(parents=True)
-        target = self.claude / "settings.json"
+        target = self.state_root / "settings.json"
         target.write_text("old\n")
-        transaction = FileTransaction(self.claude)
+        transaction = FileTransaction(self.state_root)
         transaction.__enter__()
         transaction.write_bytes(target, b"new\n")
         with mock.patch("shutil.copy2", side_effect=OSError("injected restore failure")):
             with self.assertRaises(StateError):
                 transaction.__exit__(InstallerError, InstallerError("boom"), None)
-        # The journal and its backups must survive a failed rollback, otherwise
-        # the state root is left half-written with nothing left to replay.
         self.assertTrue(transaction.journal_path.is_file())
-        self.assertEqual(1, FileTransaction.recover_pending(self.claude))
+        self.assertEqual(1, FileTransaction.recover_pending(self.state_root))
         self.assertEqual("old\n", target.read_text())
 
     def test_successful_rollback_removes_the_transaction_directory(self) -> None:
-        self.claude.mkdir(parents=True)
-        target = self.claude / "settings.json"
+        target = self.state_root / "settings.json"
         target.write_text("old\n")
-        transaction = FileTransaction(self.claude)
+        transaction = FileTransaction(self.state_root)
         transaction.__enter__()
         transaction.write_bytes(target, b"new\n")
         transaction.__exit__(InstallerError, InstallerError("boom"), None)
@@ -237,35 +86,29 @@ class InstallerTestCase(unittest.TestCase):
         self.assertFalse(transaction.root.exists())
 
     def test_recovery_rejects_target_outside_state_root(self) -> None:
-        self.claude.mkdir(parents=True)
-        outside = self.home / "outside.txt"
+        outside = Path(self.temp.name) / "outside.txt"
         outside.write_text("keep\n")
-        transaction = FileTransaction(self.claude)
+        transaction = FileTransaction(self.state_root)
         transaction.__enter__()
         transaction.entries = [
             {"target": str(outside), "existed": False, "backup": "backups/000000"}
         ]
         transaction._write_journal("pending")
         with self.assertRaises(StateError):
-            FileTransaction.recover_pending(self.claude)
+            FileTransaction.recover_pending(self.state_root)
         self.assertEqual("keep\n", outside.read_text())
         transaction.__exit__(None, None, None)
 
     def test_transaction_refuses_targets_outside_its_own_state_root(self) -> None:
-        self.claude.mkdir(parents=True)
-        outside = self.home / "outside.txt"
+        outside = Path(self.temp.name) / "outside.txt"
         outside.write_text("keep\n")
-        transaction = FileTransaction(self.claude)
+        transaction = FileTransaction(self.state_root)
         transaction.__enter__()
         try:
-            # remove() has to check before its existence test. A missing "../x"
-            # used to return False silently, and reset_for_install() then drops
-            # the entry from the rewritten manifest -- laundering the evidence.
             with self.assertRaises(StateError):
-                transaction.remove(self.claude / ".." / "never-existed.txt")
-            # Removing the state root itself would rmtree the live transaction.
+                transaction.remove(self.state_root / ".." / "never-existed.txt")
             with self.assertRaises(StateError):
-                transaction.remove(self.claude)
+                transaction.remove(self.state_root)
             with self.assertRaises(StateError):
                 transaction.snapshot(outside)
             journal = json.loads(transaction.journal_path.read_text())
@@ -273,355 +116,6 @@ class InstallerTestCase(unittest.TestCase):
             self.assertEqual("keep\n", outside.read_text())
         finally:
             transaction.__exit__(None, None, None)
-
-    def test_uninstall_rejects_a_manifest_entry_outside_the_state_root(self) -> None:
-        self.claude.mkdir(parents=True)
-        outside = self.home / "outside.txt"
-        outside.write_text("keep\n")
-        self.manifest.write_text(
-            json.dumps({"schemaVersion": 2, "files": ["../outside.txt"], "hashes": {}})
-        )
-        with self.assertRaises(StateError):
-            self.deployment(force=True).uninstall(confirm=False)
-        self.assertEqual("keep\n", outside.read_text())
-        self.assertTrue(self.manifest.exists())
-
-    def test_reset_rejects_an_entry_that_escapes_the_prefix_filter(self) -> None:
-        self.claude.mkdir(parents=True)
-        outside = self.home / "outside.txt"
-        outside.write_text("keep\n")
-        # Satisfies startswith("plugins/hukuhaka-plugin/") yet resolves to $HOME.
-        escaping = "plugins/hukuhaka-plugin/../../../outside.txt"
-        self.manifest.write_text(
-            json.dumps({"schemaVersion": 2, "files": [escaping], "hashes": {}})
-        )
-        with self.assertRaises(StateError):
-            self.deployment(force=True).reset_for_install()
-        self.assertEqual("keep\n", outside.read_text())
-        self.assertIn(escaping, json.loads(self.manifest.read_text())["files"])
-
-    def test_deploy_rejects_a_stale_manifest_entry_outside_the_state_root(self) -> None:
-        self.deployment().deploy()
-        outside = self.home / "outside.txt"
-        outside.write_text("keep\n")
-        manifest = json.loads(self.manifest.read_text())
-        manifest["files"].append("../outside.txt")
-        self.manifest.write_text(json.dumps(manifest))
-        # force=True on purpose: _check_drift() returns early under --force, so
-        # this proves the gate is in build_plan() and not the drift check.
-        with self.assertRaises(StateError):
-            self.deployment(force=True).deploy()
-        self.assertEqual("keep\n", outside.read_text())
-        self.assertTrue((self.claude / "CLAUDE.md").exists())
-
-    def test_deploy_rejects_a_registry_key_that_escapes_the_marketplace_root(self) -> None:
-        plugins_dir = self.claude / "plugins"
-        plugins_dir.mkdir(parents=True)
-        outside = self.home / "outside.txt"
-        outside.write_text("keep\n")
-        (plugins_dir / "installed_plugins.json").write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "plugins": {
-                        "../../../outside.txt@hukuhaka-plugin": [
-                            {"scope": "user", "version": "0"}
-                        ]
-                    },
-                }
-            )
-        )
-        with self.assertRaises(StateError):
-            self.deployment().deploy()
-        self.assertEqual("keep\n", outside.read_text())
-
-    def test_a_symlinked_directory_inside_the_state_root_is_not_an_escape(self) -> None:
-        # Executable form of the reason containment stays lexical: swapping
-        # os.path.abspath() for Path.resolve() in ensure_within() breaks this.
-        shared = self.home / "plugins-shared"
-        shared.mkdir()
-        self.claude.mkdir(parents=True)
-        (self.claude / "plugins").symlink_to(shared, target_is_directory=True)
-        self.deployment().deploy()
-        self.assertTrue(self.manifest.exists())
-        self.assertTrue((self.claude / "CLAUDE.md").exists())
-
-    def test_uninstall_does_not_create_missing_registries(self) -> None:
-        self.claude.mkdir(parents=True)
-        self.manifest.write_text(
-            json.dumps(
-                {
-                    "schemaVersion": 2,
-                    "version": "1.0.11",
-                    "components": [],
-                    "files": [],
-                    "hashes": {},
-                }
-            )
-        )
-        self.deployment(force=True).uninstall(confirm=False)
-        self.assertFalse((self.claude / "settings.json").exists())
-        self.assertFalse((self.claude / "plugins" / "installed_plugins.json").exists())
-        self.assertFalse((self.claude / "plugins" / "known_marketplaces.json").exists())
-
-    def test_uninstall_preserves_optional_statusline(self) -> None:
-        self.deployment().deploy()
-        settings_path = self.claude / "settings.json"
-        settings = json.loads(settings_path.read_text())
-        settings["statusLine"] = {"command": "npx ccstatusline"}
-        settings_path.write_text(json.dumps(settings))
-        legacy = self.claude / "statusline.sh"
-        legacy.write_text("user managed\n")
-        self.deployment(force=True).uninstall(confirm=False)
-        self.assertEqual({"command": "npx ccstatusline"}, json.loads(settings_path.read_text())["statusLine"])
-        self.assertEqual("user managed\n", legacy.read_text())
-
-    def test_ghost_registry_and_directory_are_removed(self) -> None:
-        plugins = self.claude / "plugins"
-        marketplace = plugins / "hukuhaka-plugin"
-        removed_names = ("hukuhaka-ltm", "hukuhaka-project-mapper")
-        for name in removed_names:
-            ghost_dir = marketplace / name
-            ghost_dir.mkdir(parents=True)
-            (ghost_dir / "old.txt").write_text("old")
-        registry = plugins / "installed_plugins.json"
-        registry.parent.mkdir(parents=True, exist_ok=True)
-        registry.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "plugins": {
-                        "{}@hukuhaka-plugin".format(name): [
-                            {
-                                "scope": "user",
-                                "installPath": str(marketplace / name),
-                                "version": "0",
-                            }
-                        ]
-                        for name in removed_names
-                    },
-                }
-            )
-        )
-        self.deployment().deploy()
-        installed = json.loads(registry.read_text())["plugins"]
-        for name in removed_names:
-            self.assertNotIn("{}@hukuhaka-plugin".format(name), installed)
-            self.assertFalse((marketplace / name).exists())
-
-    def test_dry_run_creates_no_state(self) -> None:
-        self.deployment(dry_run=True).deploy()
-        self.assertFalse(self.claude.exists())
-
-    def test_dry_run_uninstall_does_not_contend_for_the_lock(self) -> None:
-        # InstallerLock.__enter__ mkdir()s the state root and writes a pid, so a
-        # dry run that takes it both creates state and dies against a real
-        # install already holding it. Reporting what --dry-run would remove must
-        # not need exclusive access to anything.
-        self.deployment().deploy()
-        with InstallerLock(self.claude):
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                self.deployment(dry_run=True).uninstall(confirm=False)
-        self.assertIn("Dry run", output.getvalue())
-
-    def test_current_component_state_reads_plugin_versions(self) -> None:
-        deployment = ClaudeDeployment(
-            ROOT,
-            self.claude,
-            ["hukuhaka-worklog"],
-        )
-        deployment.deploy()
-
-        components, versions = deployment.current_component_state()
-
-        self.assertEqual({"hukuhaka-worklog"}, components)
-        self.assertEqual("0.4.0", versions["hukuhaka-worklog"])
-
-    def test_current_component_state_treats_missing_version_as_unknown(self) -> None:
-        deployment = ClaudeDeployment(
-            ROOT,
-            self.claude,
-            ["hukuhaka-worklog"],
-        )
-        deployment.deploy()
-        registry = self.claude / "plugins" / "installed_plugins.json"
-        data = json.loads(registry.read_text())
-        del data["plugins"]["hukuhaka-worklog@hukuhaka-plugin"][0]["version"]
-        registry.write_text(json.dumps(data))
-
-        components, versions = deployment.current_component_state()
-
-        self.assertEqual({"hukuhaka-worklog"}, components)
-        self.assertNotIn("hukuhaka-worklog", versions)
-
-    def test_claude_config_dir_overrides_default_home(self) -> None:
-        configured = self.home / "custom claude"
-
-        self.assertEqual(
-            configured.resolve(),
-            resolve_claude_config_dir(
-                {"CLAUDE_CONFIG_DIR": str(configured)},
-                fallback_home=self.home,
-            ),
-        )
-        self.assertEqual(
-            self.claude.resolve(),
-            resolve_claude_config_dir({}, fallback_home=self.home),
-        )
-
-    def test_native_version_mismatch_rolls_back_the_whole_claude_update(self) -> None:
-        self.deployment().deploy()
-        plugin_relative = (
-            "plugins/hukuhaka-plugin/hukuhaka-report-planner/"
-            ".claude-plugin/plugin.json"
-        )
-        plugin_path = self.claude / plugin_relative
-        plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
-        plugin["version"] = "0.5.0"
-        plugin_path.write_text(json.dumps(plugin), encoding="utf-8")
-
-        registry_path = self.claude / "plugins" / "installed_plugins.json"
-        registry = json.loads(registry_path.read_text(encoding="utf-8"))
-        registry["plugins"][
-            "hukuhaka-report-planner@hukuhaka-plugin"
-        ][0]["version"] = "0.5.0"
-        registry_path.write_text(json.dumps(registry), encoding="utf-8")
-
-        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
-        manifest["version"] = "1.1.7"
-        manifest["hashes"][plugin_relative] = sha256_file(plugin_path)
-        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
-        before = {
-            path.relative_to(self.claude).as_posix(): path.read_bytes()
-            for path in self.claude.rglob("*")
-            if path.is_file()
-        }
-
-        def stale_native_state() -> list[dict]:
-            plugins = self._registered_claude_plugins()
-            for item in plugins:
-                if item["id"] == "hukuhaka-report-planner@hukuhaka-plugin":
-                    item["version"] = "0.5.0"
-            return plugins
-
-        deployment = self.deployment()
-        with mock.patch.object(
-            deployment, "_native_plugins", side_effect=stale_native_state
-        ):
-            with self.assertRaisesRegex(
-                InstallerError, "version or enabled state does not match"
-            ):
-                deployment.deploy()
-
-        after = {
-            path.relative_to(self.claude).as_posix(): path.read_bytes()
-            for path in self.claude.rglob("*")
-            if path.is_file()
-        }
-        self.assertEqual(before, after)
-    def test_dry_run_reset_does_not_contend_for_the_lock(self) -> None:
-        # Over-correction guard: reset already avoided this with nullcontext and
-        # must keep avoiding it now that both paths share one manager.
-        self.deployment().deploy()
-        with InstallerLock(self.claude):
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                self.deployment(dry_run=True).reset_for_install()
-        self.assertIn("[dry-run] rm", output.getvalue())
-
-    def leave_interrupted_transaction(self) -> None:
-        # Against the deployment's own state root: containment is lexical, and
-        # ClaudeDeployment resolves home, so a journal written through the
-        # unresolved spelling of the same directory would not compare equal.
-        state_root = self.deployment().claude_dir
-        transaction = FileTransaction(state_root)
-        transaction.__enter__()
-        transaction.write_bytes(state_root / "settings.json", b"interrupted\n")
-
-    def test_uninstall_reports_a_recovered_transaction(self) -> None:
-        # The count was discarded here, so an interrupted transaction was
-        # replayed with nothing said about it.
-        self.deployment().deploy()
-        self.leave_interrupted_transaction()
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            self.deployment(force=True).uninstall(confirm=False)
-        self.assertIn("[recovered] 1 interrupted transaction(s)", output.getvalue())
-
-    def test_reset_reports_a_recovered_transaction(self) -> None:
-        self.deployment().deploy()
-        self.leave_interrupted_transaction()
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            self.deployment(force=True).reset_for_install()
-        self.assertIn("[recovered] 1 interrupted transaction(s)", output.getvalue())
-
-    def test_reset_preserves_template_and_rejects_modified_plugin(self) -> None:
-        self.deployment().deploy()
-        plugin = (
-            self.claude
-            / "plugins"
-            / "hukuhaka-plugin"
-            / "hukuhaka-report-planner"
-            / ".claude-plugin"
-            / "plugin.json"
-        )
-        plugin.write_text("user edit\n")
-        with self.assertRaises(DriftError):
-            self.deployment().reset_for_install()
-        self.assertTrue(plugin.exists())
-
-        self.deployment(force=True).reset_for_install()
-        self.assertFalse(plugin.exists())
-        self.assertTrue((self.claude / "CLAUDE.md").exists())
-        manifest = json.loads(self.manifest.read_text())
-        self.assertEqual(["claude-md"], manifest["components"])
-
-    def test_reset_can_include_managed_template(self) -> None:
-        self.deployment().deploy()
-        self.deployment().reset_for_install(reset_template=True)
-        self.assertFalse((self.claude / "CLAUDE.md").exists())
-        self.assertFalse(self.manifest.exists())
-
-
-class ClaudeNativeCommandTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(prefix="hukuhaka claude native ")
-        self.config_dir = Path(self.temp.name) / "config"
-        self.deployment = ClaudeDeployment(
-            ROOT,
-            self.config_dir,
-            ["hukuhaka-engineering-plan"],
-        )
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
-
-    def test_native_plugin_list_rejects_malformed_json(self) -> None:
-        completed = subprocess.CompletedProcess(
-            ("claude", "plugin", "list", "--json"),
-            0,
-            stdout="{broken",
-            stderr="",
-        )
-        with mock.patch(
-            "scripts.install.claude.subprocess.run", return_value=completed
-        ):
-            with self.assertRaisesRegex(InstallerError, "invalid JSON"):
-                self.deployment._native_plugins()
-
-    def test_native_plugin_list_reports_command_failure(self) -> None:
-        failure = subprocess.CalledProcessError(
-            1,
-            ("claude", "plugin", "list", "--json"),
-            stderr="injected native failure",
-        )
-        with mock.patch(
-            "scripts.install.claude.subprocess.run", side_effect=failure
-        ):
-            with self.assertRaisesRegex(InstallerError, "injected native failure"):
-                self.deployment._native_plugins()
 
 
 class InstallerSelectionTests(unittest.TestCase):
@@ -637,8 +131,8 @@ class InstallerSelectionTests(unittest.TestCase):
 
     def test_recommended_selects_only_supported_catalog_defaults(self) -> None:
         installer = self.installer(
-            "claude",
-            "install",
+                    "codex",
+                    "install",
             "--recommended",
             "--yes",
         )
@@ -647,37 +141,43 @@ class InstallerSelectionTests(unittest.TestCase):
                 "hukuhaka-report-planner",
                 "hukuhaka-engineering-plan",
                 "hukuhaka-worklog",
-                "hukuhaka-codex",
-                "claude-md",
+                "hukuhaka-uiux-foundation",
+                "agents-md",
             ],
-            installer._automation_components("claude"),
+            installer._automation_components("codex"),
         )
 
     def test_explicit_selection_is_the_complete_desired_state(self) -> None:
         installer = self.installer(
-            "claude",
+            "codex",
             "install",
             "--components",
             "hukuhaka-engineering-plan",
         )
         self.assertEqual(
             ["hukuhaka-engineering-plan"],
-            installer._automation_components("claude"),
+            installer._automation_components("codex"),
+        )
+        scout = self.installer(
+            "codex", "install", "--components", "evidence-scout"
+        )
+        self.assertEqual(
+            ["evidence-scout"], scout._automation_components("codex")
         )
 
     def test_removed_legacy_components_are_unknown(self) -> None:
         for name in ("hukuhaka-ltm", "hukuhaka-project-mapper"):
             installer = self.installer(
-                "claude", "install", "--components", name
+                "codex", "install", "--components", name
             )
             with self.assertRaisesRegex(
                 InstallerError, "unknown .* component '{}'".format(name)
             ):
-                installer._automation_components("claude")
+                installer._automation_components("codex")
 
     def test_declared_alias_resolves_to_current_component(self) -> None:
         installer = self.installer(
-            "claude",
+            "codex",
             "install",
             "--components",
             "old-report-planner",
@@ -685,24 +185,25 @@ class InstallerSelectionTests(unittest.TestCase):
         installer.aliases["old-report-planner"] = "hukuhaka-report-planner"
         self.assertEqual(
             ["hukuhaka-report-planner"],
-            installer._automation_components("claude"),
+            installer._automation_components("codex"),
         )
 
     def test_version_summary_covers_install_change_same_and_unknown(self) -> None:
         installer = self.installer(
-            "claude",
+            "codex",
             "install",
             "--recommended",
             "--yes",
         )
         plan = HostInstallPlan(
-            "claude",
+            "codex",
             [
                 "hukuhaka-report-planner",
                 "hukuhaka-engineering-plan",
                 "hukuhaka-worklog",
-                "hukuhaka-codex",
-                "claude-md",
+                "hukuhaka-uiux-foundation",
+                "agents-md",
+                "astra_worker",
             ],
         )
 
@@ -712,32 +213,32 @@ class InstallerSelectionTests(unittest.TestCase):
                 {
                     "hukuhaka-engineering-plan",
                     "hukuhaka-worklog",
-                    "hukuhaka-codex",
+                    "hukuhaka-uiux-foundation",
                 },
                 {
                     "hukuhaka-engineering-plan": "0.0.9",
-                    "hukuhaka-worklog": "0.4.0",
+                    "hukuhaka-worklog": "0.4.1",
                 },
             )
         )
 
         self.assertEqual(
-            "not installed → 0.6.0",
+            "not installed → 0.7.2",
             summary["hukuhaka-report-planner"],
         )
         self.assertEqual(
-            "0.0.9 → 0.2.2",
+            "0.0.9 → 0.2.3",
             summary["hukuhaka-engineering-plan"],
         )
         self.assertEqual(
-            "0.4.0 (same version)",
+            "0.4.1 (same version)",
             summary["hukuhaka-worklog"],
         )
         self.assertEqual(
-            "unknown → 0.4.1",
-            summary["hukuhaka-codex"],
+            "unknown → 0.1.0",
+            summary["hukuhaka-uiux-foundation"],
         )
-        self.assertNotIn("claude-md", summary)
+        self.assertNotIn("agents-md", summary)
 
     def test_target_version_rejects_invalid_plugin_manifest(self) -> None:
         with tempfile.TemporaryDirectory(prefix="hukuhaka target version ") as tmp:
@@ -754,7 +255,7 @@ class InstallerSelectionTests(unittest.TestCase):
                                 "name": "planner",
                                 "kind": "plugin",
                                 "hosts": {
-                                    "claude": {"manifest": "plugin.json"}
+                                    "codex": {"manifest": "plugin.json"}
                                 },
                             }
                         ]
@@ -765,7 +266,7 @@ class InstallerSelectionTests(unittest.TestCase):
                 [
                     "--repo-root",
                     str(root),
-                    "claude",
+                    "codex",
                     "install",
                     "--recommended",
                     "--yes",
@@ -776,7 +277,7 @@ class InstallerSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 StateError, "invalid plugin manifest for planner"
             ):
-                installer._components("claude")
+                installer._components("codex")
 
     def test_target_version_rejects_missing_plugin_version(self) -> None:
         with tempfile.TemporaryDirectory(prefix="hukuhaka target version ") as tmp:
@@ -791,7 +292,7 @@ class InstallerSelectionTests(unittest.TestCase):
                                 "name": "planner",
                                 "kind": "plugin",
                                 "hosts": {
-                                    "claude": {"manifest": "plugin.json"}
+                                    "codex": {"manifest": "plugin.json"}
                                 },
                             }
                         ]
@@ -802,7 +303,7 @@ class InstallerSelectionTests(unittest.TestCase):
                 [
                     "--repo-root",
                     str(root),
-                    "claude",
+                    "codex",
                     "install",
                     "--recommended",
                     "--yes",
@@ -813,7 +314,7 @@ class InstallerSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 StateError, "invalid plugin manifest for planner"
             ):
-                installer._components("claude")
+                installer._components("codex")
 
     def test_codex_component_state_reads_versions_and_normalizes_alias(self) -> None:
         installer = self.installer(
@@ -851,6 +352,15 @@ class InstallerSelectionTests(unittest.TestCase):
              mock.patch("scripts.install.main.shutil.which", return_value=None):
             self.assertEqual(1, installer.interactive())
 
+    def test_claude_host_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.installer(
+                "claude",
+                "install",
+                "--recommended",
+                "--yes",
+            )
+
     def test_legacy_selection_flags_are_removed(self) -> None:
         with self.assertRaises(SystemExit):
             build_parser().parse_args(
@@ -862,8 +372,8 @@ class InstallerSelectionTests(unittest.TestCase):
             [
                 "--repo-root",
                 str(ROOT),
-                "claude",
-                "install",
+                "codex",
+            "install",
                 "--recommended",
                 "--version=1.2.3",
                 "--source-dir=.",
@@ -895,34 +405,6 @@ class InstallerSelectionTests(unittest.TestCase):
         self.assertEqual(800000, args.window)
         self.assertEqual(720000, args.compact_at)
         self.assertEqual("body_after_prefix", args.scope)
-
-    def test_interactive_continues_to_codex_after_claude_failure(self) -> None:
-        installer = self.installer()
-        plans = [
-            HostInstallPlan("claude", ["claude-md"]),
-            HostInstallPlan("codex", ["agents-md"]),
-        ]
-        with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
-             mock.patch.object(
-                 installer,
-                 "_current_state",
-                 return_value=HostComponentState(set(), {}),
-             ), \
-             mock.patch.object(installer, "_host_version", return_value="test"), \
-             mock.patch("scripts.install.main.prompt_install_plan", return_value=plans), \
-             mock.patch.object(installer, "_confirm", return_value=True), \
-             mock.patch.object(
-                 installer,
-                 "_apply_host",
-                 side_effect=[
-                     HostResult("claude", "failed", "injected"),
-                     HostResult("codex", "success"),
-                 ],
-             ) as apply_host:
-            self.assertEqual(1, installer.interactive())
-
-        self.assertEqual(2, apply_host.call_count)
 
     def test_interactive_applies_config_before_codex_components_and_verifies(self) -> None:
         installer = self.installer()
@@ -1553,34 +1035,34 @@ class PlainTerminalSelectionTests(unittest.TestCase):
         self.assertIn("agents-md (template)", rendered)
         self.assertNotIn("agents-md (template ", rendered)
 
-    def test_only_detected_hosts_are_rendered_and_reset_is_explicit(self) -> None:
+    def test_codex_only_host_is_rendered_and_reset_is_explicit(self) -> None:
         output = io.StringIO()
         plans = prompt_install_plan(
             io.StringIO(),
             output,
             sections=[
                 {
-                    "host": "claude",
-                    "label": "Claude Code",
+                    "host": "codex",
+                    "label": "Codex",
                     "available": True,
                     "version": "2.1",
                     "components": [{"name": "planner", "kind": "plugin"}],
                     "selected": {"planner"},
                 },
             ],
-            keys=("down", "down", "down", "toggle", "down", "down", "enter"),
+            keys=("down", "down", "down", "down", "down", "down", "toggle", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
-        self.assertEqual("claude", plans[0].host)
+        self.assertEqual("codex", plans[0].host)
         self.assertTrue(plans[0].reset)
         self.assertFalse(plans[0].include_template)
         rendered = output.getvalue()
-        self.assertIn("Claude Code", rendered)
-        self.assertNotIn("Codex", rendered)
+        self.assertIn("Codex", rendered)
+        self.assertNotIn("Claude", rendered)
         self.assertIn("Components", rendered)
+        self.assertIn("Settings", rendered)
         self.assertIn("Reset", rendered)
-        self.assertNotIn("Settings", rendered)
 
     def test_codex_global_config_is_opt_in(self) -> None:
         output = io.StringIO()
@@ -1711,19 +1193,19 @@ class PlainTerminalSelectionTests(unittest.TestCase):
             output.getvalue(),
         )
 
-    def test_enabled_host_with_no_components_is_an_exact_empty_state(self) -> None:
+    def test_enabled_codex_with_no_components_is_an_exact_empty_state(self) -> None:
         plans = prompt_install_plan(
             io.StringIO(),
             io.StringIO(),
             sections=[
                 {
-                    "host": "claude",
-                    "label": "Claude Code",
+                    "host": "codex",
+                    "label": "Codex",
                     "components": [{"name": "planner", "kind": "plugin"}],
                     "selected": {"planner"},
                 }
             ],
-            keys=("down", "toggle", "down", "down", "down", "down", "enter"),
+            keys=("down", "toggle", "down", "down", "down", "down", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))

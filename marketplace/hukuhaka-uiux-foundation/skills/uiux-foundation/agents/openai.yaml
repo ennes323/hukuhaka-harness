@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI/UX Foundation"
+  short_description: "Ground and synchronize application UI work"
+  default_prompt: "Use $uiux-foundation to ground and complete this user-visible frontend or UI/UX task."

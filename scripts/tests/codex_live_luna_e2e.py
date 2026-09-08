@@ -59,9 +59,11 @@ def json_lines(path: Path) -> Iterable[Dict[str, Any]]:
             yield item
 
 
-def subagent_model(path: Path) -> str:
+def session_profile(path: Path) -> tuple[str, str, bool]:
     role = ""
     model = ""
+    effort = ""
+    completed = False
     for item in json_lines(path):
         if item.get("type") == "session_meta":
             payload = item.get("payload", {})
@@ -74,7 +76,17 @@ def subagent_model(path: Path) -> str:
             payload = item.get("payload", {})
             if isinstance(payload, dict):
                 model = str(payload.get("model", ""))
-    return model if role == "evidence-scout" else ""
+                effort = str(payload.get("effort", payload.get("reasoning_effort", "")))
+        elif item.get("type") == "event_msg":
+            payload = item.get("payload", {})
+            completed |= payload.get("type") in ("task_complete", "task_completed")
+            if payload.get("type") == "thread_settings_applied":
+                settings = payload.get("thread_settings", {})
+                model = str(settings.get("model", model))
+                effort = str(settings.get("reasoning_effort", effort))
+    if role:
+        raise LunaE2EFailure("disabled subagent execution produced a child rollout")
+    return model, effort, completed
 
 
 def agent_messages(output: str) -> Sequence[str]:
@@ -133,7 +145,7 @@ def main() -> int:
                 "codex",
                 "install",
                 "--components",
-                "evidence-scout",
+                "result-runner",
                 "--yes",
             ),
             cwd=source,
@@ -143,16 +155,16 @@ def main() -> int:
         config = (codex_home / "config.toml").read_text(encoding="utf-8")
         if "model_catalog_json" in config or (codex_home / "models-luna-v2.json").exists():
             raise LunaE2EFailure("isolated install still depends on a model catalog override")
+        if "multi_agent = false" not in config:
+            raise LunaE2EFailure("isolated install did not disable subagents")
 
         prompt = (
-            "Spawn the installed evidence-scout agent exactly once with fork_turns=none. "
-            "Send only this JSON envelope: "
-            '{"question":"Confirm the fresh Evidence Scout manifest schema value.",'
-            '"roots":["' + str(source / "scripts" / "install" / "codex.py") + '"],'
-            '"scope":"Read only the named file.",'
-            '"coverage":[{"id":"C1","ask":"Report the fresh-install schemaVersion value with exact path and line evidence."}],'
-            '"constraints":"Do not inspect any other path."}. '
-            "Wait for completion. If it returns valid evidence for schemaVersion 3, "
+            "Execute this exact command directly, without subagents: "
+            "python3 -c 'print(314159)' . Working directory: " + str(root) + ". "
+            "Python3 is available; no other prerequisites. Run only that command "
+            "once, read its terminal output and exit code, and stop within 60 seconds. "
+            "Do not edit files, run extra checks, retry, or spawn agents. "
+            "If output is 314159 and exit code is 0, "
             "finish with exactly LUNA_TAG_E2E_OK."
         )
         result = run(
@@ -165,26 +177,26 @@ def main() -> int:
                 "-s",
                 "read-only",
                 "-m",
-                "gpt-5.6-sol",
+                "gpt-5.6-luna",
                 "-C",
-                str(source),
+                str(root),
                 "-c",
-                'model_reasoning_effort="low"',
+                'model_reasoning_effort="xhigh"',
                 prompt,
             ),
-            cwd=source,
+            cwd=root,
             environment=environment,
             timeout=240,
         )
         if "LUNA_TAG_E2E_OK" not in agent_messages(result.stdout):
             raise LunaE2EFailure("parent Codex run did not confirm the Luna smoke")
-        models = [
-            subagent_model(path)
+        profiles = [
+            session_profile(path)
             for path in (codex_home / "sessions").glob("**/rollout-*.jsonl")
         ]
-        if "gpt-5.6-luna" not in models:
+        if profiles != [("gpt-5.6-luna", "xhigh", True)]:
             raise LunaE2EFailure(
-                "no evidence-scout rollout recorded model gpt-5.6-luna"
+                "expected exactly one completed standalone gpt-5.6-luna/xhigh rollout"
             )
 
     print("Authenticated isolated Luna smoke verified for v{}".format(version))

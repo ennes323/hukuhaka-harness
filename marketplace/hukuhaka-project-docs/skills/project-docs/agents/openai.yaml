@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Docs"
+  short_description: "Route and validate repository documentation"
+  default_prompt: "Use $project-docs to audit this repository's documentation manifest."
+policy:
+  allow_implicit_invocation: true

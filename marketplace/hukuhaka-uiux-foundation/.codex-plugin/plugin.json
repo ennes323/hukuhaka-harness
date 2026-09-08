@@ -1,0 +1,31 @@
+{
+  "name": "hukuhaka-uiux-foundation",
+  "version": "0.1.0",
+  "description": "Keep frontend design decisions complete and consistent across design systems, mockups, components, and rendered applications.",
+  "author": {
+    "name": "hukuhaka"
+  },
+  "repository": "https://github.com/hukuhaka/hukuhaka-harness",
+  "license": "MIT",
+  "keywords": [
+    "frontend",
+    "ui",
+    "ux",
+    "design-system",
+    "accessibility"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hukuhaka UI/UX Foundation",
+    "shortDescription": "Keep application UI decisions complete and synchronized.",
+    "longDescription": "Inspect existing frontend design authority, establish or refine missing UI foundations, assign reusable decisions to the right system layer, synchronize design systems, mockups, and applications, and verify rendered responsive and accessible behavior.",
+    "developerName": "hukuhaka",
+    "category": "Developer Tools",
+    "capabilities": [
+      "UI design",
+      "Frontend development",
+      "Visual verification"
+    ],
+    "defaultPrompt": "Use $uiux-foundation to ground and complete this user-visible frontend or UI/UX task."
+  }
+}

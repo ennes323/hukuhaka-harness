@@ -24,26 +24,8 @@ CODEX_HOOK_EVENTS = {
     "SubagentStop",
     "UserPromptSubmit",
 }
-CLAUDE_HOOK_EVENTS = {
-    "ConfigChange",
-    "FileChanged",
-    "InstructionsLoaded",
-    "Notification",
-    "PermissionRequest",
-    "PostCompact",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PreCompact",
-    "PreToolUse",
-    "SessionEnd",
-    "SessionStart",
-    "Stop",
-    "SubagentStart",
-    "SubagentStop",
-    "UserPromptSubmit",
-}
 NO_MATCHER_EVENTS = {"Stop", "UserPromptSubmit"}
-ROOT_PLACEHOLDER_RE = re.compile(r"\$\{(?:CLAUDE_)?PLUGIN_ROOT\}/([^\s\"']+)")
+ROOT_PLACEHOLDER_RE = re.compile(r"\$\{PLUGIN_ROOT\}/([^\s\"']+)")
 
 
 class ContractError(ValueError):
@@ -186,9 +168,8 @@ def validate_hook_file(path: Path, hosts: set[str], errors: list[str]) -> None:
     require(isinstance(groups, dict) and bool(groups), f"{path}: hooks must be a non-empty object", errors)
     if not isinstance(groups, dict):
         return
-    allowed_events = CLAUDE_HOOK_EVENTS if hosts == {"claude"} else CODEX_HOOK_EVENTS
-    if hosts == {"claude", "codex"}:
-        allowed_events = CLAUDE_HOOK_EVENTS & CODEX_HOOK_EVENTS
+    require(hosts == {"codex"}, f"{path}: hooks must be Codex-only", errors)
+    allowed_events = CODEX_HOOK_EVENTS
     for event, matcher_groups in groups.items():
         require(event in allowed_events, f"{path}: unsupported {sorted(hosts)} hook event {event}", errors)
         require(isinstance(matcher_groups, list) and bool(matcher_groups), f"{path}: {event} must be a non-empty array", errors)
@@ -219,6 +200,11 @@ def validate_hook_file(path: Path, hosts: set[str], errors: list[str]) -> None:
                 if timeout is not None:
                     require(isinstance(timeout, int) and timeout > 0, f"{handler_label}: timeout must be positive", errors)
                 if isinstance(command, str):
+                    require(
+                        "${CLAUDE_PLUGIN_ROOT}" not in command,
+                        f"{handler_label}: retired Claude plugin-root variable is not allowed",
+                        errors,
+                    )
                     for match in ROOT_PLACEHOLDER_RE.finditer(command):
                         target = (path.parent.parent / match.group(1)).resolve()
                         require(target.is_file(), f"{handler_label}: referenced script does not exist: {match.group(1)}", errors)
@@ -230,6 +216,11 @@ def validate_repository(root: Path = ROOT) -> list[str]:
     catalog = load_json(catalog_path, errors)
     if not isinstance(catalog, dict):
         return errors
+
+    for retired_manifest in sorted(root.glob("marketplace/*/.claude-plugin/plugin.json")):
+        errors.append(
+            f"retired Claude manifest remains: {retired_manifest.relative_to(root)}"
+        )
 
     hook_hosts: dict[Path, set[str]] = {}
     for component in catalog.get("components", []):
@@ -282,7 +273,7 @@ def validate_repository(root: Path = ROOT) -> list[str]:
         if default_hooks.is_file():
             hosts = {
                 host
-                for host, manifest_name in (("claude", ".claude-plugin"), ("codex", ".codex-plugin"))
+                for host, manifest_name in (("codex", ".codex-plugin"),)
                 if (plugin_root / manifest_name / "plugin.json").is_file()
             }
             hook_hosts.setdefault(default_hooks.resolve(), set()).update(hosts)
@@ -294,11 +285,9 @@ def validate_repository(root: Path = ROOT) -> list[str]:
         errors.extend(validate_openai_yaml(metadata_path))
 
     engineering = root / "marketplace" / "hukuhaka-engineering-plan"
-    claude_manifest = load_json(engineering / ".claude-plugin" / "plugin.json", errors)
     codex_manifest = load_json(engineering / ".codex-plugin" / "plugin.json", errors)
-    if isinstance(claude_manifest, dict) and isinstance(codex_manifest, dict):
-        require(claude_manifest.get("version") == codex_manifest.get("version"), "engineering-plan host versions differ", errors)
-        require(claude_manifest.get("skills") == codex_manifest.get("skills") == "./skills/", "engineering-plan shared skills path differs", errors)
+    if isinstance(codex_manifest, dict):
+        require(codex_manifest.get("skills") == "./skills/", "engineering-plan Codex skills path differs", errors)
     metadata_path = engineering / "skills" / "engineering-plan" / "agents" / "openai.yaml"
     if metadata_path.is_file():
         metadata = parse_openai_yaml(metadata_path)

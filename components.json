@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "marketplaces": {
-    "claude": "hukuhaka-plugin",
     "codex": "hukuhaka-harness"
   },
   "components": [
@@ -11,9 +10,6 @@
       "lifecycle": "supported",
       "default": true,
       "hosts": {
-        "claude": {
-          "manifest": "marketplace/hukuhaka-report-planner/.claude-plugin/plugin.json"
-        },
         "codex": {
           "manifest": "marketplace/hukuhaka-report-planner/.codex-plugin/plugin.json"
         }
@@ -25,9 +21,6 @@
       "lifecycle": "supported",
       "default": true,
       "hosts": {
-        "claude": {
-          "manifest": "marketplace/hukuhaka-engineering-plan/.claude-plugin/plugin.json"
-        },
         "codex": {
           "manifest": "marketplace/hukuhaka-engineering-plan/.codex-plugin/plugin.json"
         }
@@ -39,9 +32,6 @@
       "lifecycle": "supported",
       "default": true,
       "hosts": {
-        "claude": {
-          "manifest": "marketplace/hukuhaka-worklog/.claude-plugin/plugin.json"
-        },
         "codex": {
           "manifest": "marketplace/hukuhaka-worklog/.codex-plugin/plugin.json"
         }
@@ -59,25 +49,25 @@
       }
     },
     {
-      "name": "hukuhaka-codex",
+      "name": "hukuhaka-project-docs",
       "kind": "plugin",
       "lifecycle": "supported",
-      "default": true,
+      "default": false,
       "hosts": {
-        "claude": {
-          "manifest": "marketplace/hukuhaka-codex/.claude-plugin/plugin.json"
+        "codex": {
+          "manifest": "marketplace/hukuhaka-project-docs/.codex-plugin/plugin.json"
         }
       }
     },
     {
-      "name": "claude-md",
-      "kind": "template",
+      "name": "hukuhaka-uiux-foundation",
+      "kind": "plugin",
       "lifecycle": "supported",
       "default": true,
-      "description": "Spec-first router (~/.claude/CLAUDE.md)",
-      "path": "templates/CLAUDE.md",
       "hosts": {
-        "claude": {}
+        "codex": {
+          "manifest": "marketplace/hukuhaka-uiux-foundation/.codex-plugin/plugin.json"
+        }
       }
     },
     {
@@ -92,25 +82,53 @@
       }
     },
     {
-      "name": "evidence-scout",
+      "name": "astra_worker",
       "kind": "agent",
       "lifecycle": "supported",
-      "default": true,
-      "description": "Luna max read-only evidence scout with dynamic routing",
-      "path": "agents/evidence-scout.toml",
-      "routingPath": "templates/evidence-scout-routing.md",
+      "default": false,
+      "description": "Optional Sol medium worker for bounded implementation, investigation, and review",
+      "path": "agents/astra_worker.toml",
       "hosts": {
         "codex": {}
       }
     },
     {
-      "name": "agent-teams",
-      "kind": "feature",
+      "name": "result-runner",
+      "kind": "agent",
       "lifecycle": "supported",
       "default": false,
-      "description": "Enable CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+      "description": "Optional Luna xhigh runner for supplied commands and completion evidence",
+      "path": "agents/result-runner.toml",
       "hosts": {
-        "claude": {}
+        "codex": {}
+      }
+    },
+    {
+      "name": "evidence-scout",
+      "kind": "agent",
+      "lifecycle": "supported",
+      "default": false,
+      "description": "Optional Luna xhigh read-only evidence collector for bounded source questions",
+      "path": "agents/evidence-scout.toml",
+      "hosts": {
+        "codex": {}
+      }
+    },
+    {
+      "name": "project-doc-reader",
+      "kind": "agent",
+      "lifecycle": "supported",
+      "default": false,
+      "description": "Manifest-gated Luna read-only project documentation reader",
+      "path": "agents/project-doc-reader.toml",
+      "resources": [
+        {
+          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/scripts/project_docs.py",
+          "target": "agents/project-doc-reader-tool.py"
+        }
+      ],
+      "hosts": {
+        "codex": {}
       }
     }
   ]

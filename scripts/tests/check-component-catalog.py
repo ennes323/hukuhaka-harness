@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-HOSTS = ("claude", "codex")
+HOSTS = ("codex",)
 
 
 def load_catalog(root: Path) -> dict:
@@ -22,8 +22,8 @@ def validate(root: Path, catalog: dict) -> int:
     if catalog.get("schemaVersion") != 1:
         errors.append("schemaVersion must be 1")
     marketplaces = catalog.get("marketplaces", {})
-    if marketplaces.get("claude") != "hukuhaka-plugin":
-        errors.append("Claude marketplace name must be hukuhaka-plugin")
+    if set(marketplaces) != {"codex"}:
+        errors.append("marketplaces must contain only codex")
     if marketplaces.get("codex") != "hukuhaka-harness":
         errors.append("Codex marketplace name must be hukuhaka-harness")
     components = catalog.get("components", [])
@@ -56,7 +56,7 @@ def validate(root: Path, catalog: dict) -> int:
             errors.append(f"{name}: deprecated components cannot be default-on")
         hosts = component.get("hosts", {})
         if not hosts or any(host not in HOSTS for host in hosts):
-            errors.append(f"{name}: hosts must contain only claude/codex")
+            errors.append(f"{name}: hosts must contain only codex")
         versions: set[str] = set()
         for host, metadata in hosts.items():
             manifest = metadata.get("manifest")
@@ -84,9 +84,33 @@ def validate(root: Path, catalog: dict) -> int:
         path_value = component.get("path")
         if path_value and not (root / path_value).is_file():
             errors.append(f"{name}: missing path {path_value}")
-        routing_path = component.get("routingPath")
-        if routing_path and not (root / routing_path).is_file():
-            errors.append(f"{name}: missing routingPath {routing_path}")
+        if "routingPath" in component:
+            errors.append(f"{name}: routingPath is retired; agents do not install global guidance")
+        resources = component.get("resources", [])
+        if not isinstance(resources, list):
+            errors.append(f"{name}: resources must be an array")
+        else:
+            for resource in resources:
+                if not isinstance(resource, dict) or set(resource) != {"source", "target"}:
+                    errors.append(f"{name}: invalid resource entry")
+                    continue
+                source = resource.get("source")
+                target = resource.get("target")
+                if (
+                    not isinstance(source, str)
+                    or source.startswith("/")
+                    or "\\" in source
+                    or any(part in {"", ".", ".."} for part in source.split("/"))
+                    or not (root / source).is_file()
+                ):
+                    errors.append(f"{name}: missing resource source {source}")
+                if (
+                    not isinstance(target, str)
+                    or target.startswith("/")
+                    or "\\" in target
+                    or any(part in {"", ".", ".."} for part in target.split("/"))
+                ):
+                    errors.append(f"{name}: invalid resource target {target}")
 
     identities = [str(name) for name in names] + aliases
     if len(identities) != len(set(identities)):
@@ -94,11 +118,12 @@ def validate(root: Path, catalog: dict) -> int:
 
     discovered = {
         path.resolve()
-        for pattern in ("marketplace/*/.claude-plugin/plugin.json", "marketplace/*/.codex-plugin/plugin.json")
-        for path in root.glob(pattern)
+        for path in root.glob("marketplace/*/.codex-plugin/plugin.json")
     }
     for path in sorted(discovered - known_manifests):
         errors.append(f"uncatalogued manifest: {path.relative_to(root)}")
+    for path in sorted(root.glob("marketplace/*/.claude-plugin/plugin.json")):
+        errors.append(f"unsupported Claude manifest: {path.relative_to(root)}")
 
     marketplace_path = root / ".agents/plugins/marketplace.json"
     try:

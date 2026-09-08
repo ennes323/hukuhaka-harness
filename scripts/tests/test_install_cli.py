@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -23,37 +24,6 @@ class InstallCliTests(unittest.TestCase):
         self.bin_dir.mkdir()
         self.home = self.temp / "home"
         self.home.mkdir()
-        self._write_executable(
-            "claude",
-            """#!/bin/bash
-if [ "${1:-}" = "--version" ]; then
-    printf 'claude test double\n'
-elif [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--json" ]; then
-    config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    python3 - "$config_dir" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-installed_path = root / "plugins" / "installed_plugins.json"
-settings_path = root / "settings.json"
-installed = json.loads(installed_path.read_text()) if installed_path.is_file() else {"plugins": {}}
-settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
-enabled = settings.get("enabledPlugins", {})
-plugins = []
-for plugin_id, entries in installed.get("plugins", {}).items():
-    if not isinstance(entries, list) or not entries:
-        continue
-    item = dict(entries[0])
-    item.update({"id": plugin_id, "enabled": enabled.get(plugin_id) is True})
-    plugins.append(item)
-print(json.dumps(plugins))
-PY
-fi
-exit 0
-""",
-        )
 
     def tearDown(self) -> None:
         self.temp_context.cleanup()
@@ -182,54 +152,12 @@ fi
         )
         return state, codex_home
 
-    def test_claude_install_reinstall_and_uninstall_through_shell_entrypoint(
-        self,
-    ) -> None:
-        arguments = ("claude", "install", "--recommended", "--yes")
-        first = self._run(arguments)
-        second = self._run(arguments)
+    def test_claude_host_is_rejected_through_shell_entrypoint(self) -> None:
+        result = self._run(("claude", "install", "--recommended", "--yes"))
 
-        self.assertEqual(0, first.returncode, first.stderr)
-        self.assertEqual(0, second.returncode, second.stderr)
-        self.assertRegex(
-            first.stdout,
-            r"hukuhaka-worklog +not installed → 0\.4\.0",
-        )
-        self.assertRegex(
-            second.stdout,
-            r"hukuhaka-worklog +0\.4\.0 \(same version\)",
-        )
-        manifest_path = self.home / ".claude" / ".hukuhaka-manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(VERSION, manifest["version"])
-        self.assertEqual(
-            {
-                "hukuhaka-report-planner",
-                "hukuhaka-engineering-plan",
-                "hukuhaka-worklog",
-                "hukuhaka-codex",
-                "claude-md",
-            },
-            set(manifest["components"]),
-        )
-
-        first_remove = self._run(("claude", "uninstall", "--yes"))
-        second_remove = self._run(("claude", "uninstall", "--yes"))
-        self.assertEqual(0, first_remove.returncode, first_remove.stderr)
-        self.assertEqual(0, second_remove.returncode, second_remove.stderr)
-        self.assertFalse(manifest_path.exists())
-
-    def test_claude_install_uses_configured_config_dir(self) -> None:
-        config_dir = self.temp / "custom claude config"
-        result = self._run(
-            ("claude", "install", "--recommended", "--yes"),
-            environment=self._environment(CLAUDE_CONFIG_DIR=str(config_dir)),
-        )
-
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertTrue((config_dir / ".hukuhaka-manifest.json").is_file())
-        self.assertFalse((self.home / ".claude").exists())
-        self.assertIn("Run /reload-plugins", result.stdout)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("invalid choice: 'claude'", result.stderr)
+        self.assertNotIn("Installation complete.", result.stdout)
 
     def test_fake_codex_desired_state_dry_run_and_lifecycle(self) -> None:
         state, codex_home = self._install_fake_codex()
@@ -246,10 +174,138 @@ fi
         self.assertEqual(0, dry_run.returncode, dry_run.stderr)
         self.assertIn("plugin add hukuhaka-report-planner@hukuhaka-harness", dry_run.stdout)
         self.assertIn("plugin add hukuhaka-worklog@hukuhaka-harness", dry_run.stdout)
-        self.assertIn("install evidence-scout", dry_run.stdout)
-        self.assertIn("enable multi-agent", dry_run.stdout)
+        self.assertNotIn("install evidence-scout", dry_run.stdout)
+        self.assertNotIn("install result-runner", dry_run.stdout)
         self.assertFalse((state / "marketplace").exists())
         self.assertEqual("", (state / "plugins").read_text(encoding="utf-8"))
+
+    def test_guidance_install_disables_subagents_and_preserves_other_config(self) -> None:
+        state, codex_home = self._install_fake_codex()
+        environment = self._environment(
+            CODEX_HOME=str(codex_home), FAKE_CODEX_STATE=str(state),
+            FAKE_SOURCE_ROOT=str(ROOT),
+        )
+        config = codex_home / "config.toml"
+        original = 'model = "user-model"\n[features]\nmulti_agent = true # user note\n'
+        config.write_text(original)
+        args = ("codex", "install", "--components", "agents-md", "--yes")
+        dry = self._run(args + ("--dry-run",), environment=environment)
+        self.assertEqual(0, dry.returncode, dry.stderr)
+        self.assertEqual(original, config.read_text())
+        self.assertFalse((codex_home / "config.toml.hukuhaka-backup").exists())
+        for _ in range(2):
+            result = self._run(args, environment=environment)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(original.replace("multi_agent = true", "multi_agent = false"),
+                             config.read_text())
+        self.assertEqual(original, (codex_home / "config.toml.hukuhaka-backup").read_text())
+        self.assertNotIn("# Subagent Routing", (codex_home / "AGENTS.md").read_text())
+
+    def test_fake_codex_project_docs_plugin_and_reader_are_independently_installable(self) -> None:
+        state, codex_home = self._install_fake_codex()
+        environment = self._environment(
+            CODEX_HOME=str(codex_home),
+            FAKE_CODEX_STATE=str(state),
+            FAKE_SOURCE_ROOT=str(ROOT),
+        )
+
+        plugin_only = self._run(
+            (
+                "codex",
+                "install",
+                "--components",
+                "hukuhaka-project-docs",
+                "--yes",
+            ),
+            environment=environment,
+        )
+        self.assertEqual(0, plugin_only.returncode, plugin_only.stderr)
+        self.assertEqual(
+            ["hukuhaka-project-docs"],
+            (state / "plugins").read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertFalse(
+            (codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
+        )
+
+        reader_only = self._run(
+            (
+                "codex",
+                "install",
+                "--components",
+                "project-doc-reader",
+                "--yes",
+            ),
+            environment=environment,
+        )
+        self.assertEqual(0, reader_only.returncode, reader_only.stderr)
+        self.assertEqual("", (state / "plugins").read_text(encoding="utf-8"))
+        self.assertTrue(
+            (codex_home / ".hukuhaka-project-doc-reader-manifest.json").is_file()
+        )
+        self.assertTrue(
+            (codex_home / "agents" / "project-doc-reader.toml").is_file()
+        )
+        helper = codex_home / "agents" / "project-doc-reader-tool.py"
+        self.assertTrue(helper.is_file())
+        reader_manifest = json.loads(
+            (
+                codex_home / ".hukuhaka-project-doc-reader-manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(4, reader_manifest["schemaVersion"])
+        self.assertEqual(
+            ["agents/project-doc-reader-tool.py"],
+            [item["target"] for item in reader_manifest["resources"]],
+        )
+        self.assertFalse((codex_home / "AGENTS.md").exists())
+
+        paired = (
+            "codex",
+            "install",
+            "--components",
+            "hukuhaka-project-docs,project-doc-reader",
+            "--yes",
+        )
+        first_pair = self._run(paired, environment=environment)
+        second_pair = self._run(paired, environment=environment)
+        self.assertEqual(0, first_pair.returncode, first_pair.stderr)
+        self.assertEqual(0, second_pair.returncode, second_pair.stderr)
+        self.assertEqual(
+            ["hukuhaka-project-docs"],
+            (state / "plugins").read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertTrue(
+            (codex_home / ".hukuhaka-project-doc-reader-manifest.json").is_file()
+        )
+
+        coexist = self._run(
+            (
+                "codex",
+                "install",
+                "--components",
+                "astra_worker,project-doc-reader",
+                "--yes",
+            ),
+            environment=environment,
+        )
+        self.assertEqual(0, coexist.returncode, coexist.stderr)
+        self.assertFalse((codex_home / "AGENTS.md").exists())
+        self.assertTrue((codex_home / "agents/astra_worker.toml").is_file())
+        self.assertTrue((codex_home / "agents/project-doc-reader.toml").is_file())
+
+        removed = self._run(
+            ("codex", "uninstall", "--yes"),
+            environment=environment,
+        )
+        self.assertEqual(0, removed.returncode, removed.stderr)
+        self.assertFalse(
+            (codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
+        )
+        self.assertFalse(
+            (codex_home / "agents" / "project-doc-reader.toml").exists()
+        )
+        self.assertFalse(helper.exists())
 
         recommended = ("codex", "install", "--recommended", "--yes")
         first = self._run(recommended, environment=environment)
@@ -258,30 +314,39 @@ fi
         self.assertEqual(0, second.returncode, second.stderr)
         self.assertRegex(
             first.stdout,
-            r"hukuhaka-worklog +not installed → 0\.4\.0",
+            r"hukuhaka-worklog +not installed → 0\.4\.1",
         )
         self.assertRegex(
             second.stdout,
-            r"hukuhaka-worklog +0\.4\.0 \(same version\)",
+            r"hukuhaka-worklog +0\.4\.1 \(same version\)",
+        )
+        self.assertRegex(
+            first.stdout,
+            r"hukuhaka-uiux-foundation +not installed → 0\.1\.0",
+        )
+        self.assertRegex(
+            second.stdout,
+            r"hukuhaka-uiux-foundation +0\.1\.0 \(same version\)",
         )
         self.assertEqual(
             {
                 "hukuhaka-report-planner",
                 "hukuhaka-engineering-plan",
                 "hukuhaka-worklog",
+                "hukuhaka-uiux-foundation",
             },
             set((state / "plugins").read_text(encoding="utf-8").splitlines()),
         )
         self.assertTrue((codex_home / ".hukuhaka-guidance-manifest.json").is_file())
-        self.assertTrue((codex_home / ".hukuhaka-evidence-scout-manifest.json").is_file())
-        self.assertTrue((codex_home / "agents" / "evidence-scout.toml").is_file())
+        self.assertFalse((codex_home / ".hukuhaka-evidence-scout-manifest.json").exists())
+        self.assertFalse((codex_home / "agents" / "evidence-scout.toml").exists())
         self.assertFalse((codex_home / "models-luna-v2.json").exists())
-        self.assertIn(
+        self.assertNotIn(
             "hukuhaka-evidence-scout:begin",
             (codex_home / "AGENTS.md").read_text(encoding="utf-8"),
         )
         config = (codex_home / "config.toml").read_text(encoding="utf-8")
-        self.assertIn("multi_agent = true", config)
+        self.assertIn("multi_agent = false", config)
         self.assertNotIn("max_concurrent_threads_per_session", config)
         self.assertNotIn("max_depth", config)
         self.assertNotIn("model_catalog_json", config)
@@ -482,6 +547,7 @@ fi
             "[agents]\n"
             "max_threads = 4 # legacy alias\n"
             'default_subagent_model = "user-model"\n'
+            'default_subagent_reasoning_effort = "high"\n'
         )
         config_path.write_text(original, encoding="utf-8")
         environment = self._environment(
@@ -491,7 +557,7 @@ fi
         )
 
         result = self._run(
-            ("codex", "install", "--recommended", "--yes"),
+            ("codex", "install", "--components", "agents-md,astra_worker", "--yes"),
             environment=environment,
         )
 
@@ -502,11 +568,20 @@ fi
         self.assertNotIn("max_concurrent_threads_per_session", config)
         self.assertNotIn("max_depth", config)
         self.assertIn('default_subagent_model = "user-model"', config)
+        self.assertIn('default_subagent_reasoning_effort = "high"', config)
         self.assertEqual(
             original.encode(),
             (codex_home / "config.toml.hukuhaka-backup").read_bytes(),
         )
 
+        # Legacy capacity adoption is authorized by the old Scout manifest,
+        # not by installing a new Worker. Seed that historical ownership.
+        from scripts.install.codex import CodexEvidenceScoutDeployment
+        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
+            CodexEvidenceScoutDeployment(
+                ROOT / "scripts/tests/fixtures/archived-agents/evidence-scout.toml",
+                codex_home, VERSION, enabled=True,
+            ).deploy()
         adopted = self._run(
             (
                 "codex",
@@ -526,6 +601,105 @@ fi
         self.assertIn("max_concurrent_threads_per_session = 8", migrated)
         self.assertIn("max_depth = 1", migrated)
 
+    def test_child_model_cli_inspect_dry_run_inherit_and_repeat(self) -> None:
+        state, codex_home = self._install_fake_codex()
+        environment = self._environment(
+            CODEX_HOME=str(codex_home), FAKE_CODEX_STATE=str(state), FAKE_SOURCE_ROOT=str(ROOT),
+        )
+        original = (
+            'model = "parent"\n[agents]\nmax_depth = 2\n'
+            'default_subagent_model = "small"\ndefault_subagent_reasoning_effort = "max"\n'
+        )
+        config = codex_home / "config.toml"
+        config.write_text(original)
+        inspected = self._run(("codex", "agents", "model", "inspect"), environment=environment)
+        self.assertEqual(0, inspected.returncode, inspected.stderr)
+        # The shell bootstrap prints its source banner before the JSON report.
+        report = json.loads(inspected.stdout[inspected.stdout.index("{"):])
+        self.assertEqual('"parent"', report["parent"]["model"])
+        dry = self._run(("codex", "agents", "model", "inherit", "--dry-run"), environment=environment)
+        self.assertEqual(0, dry.returncode, dry.stderr)
+        self.assertIn('-default_subagent_model = "small"', dry.stdout)
+        self.assertEqual(original, config.read_text())
+        self.assertFalse((codex_home / "config.toml.hukuhaka-backup").exists())
+        denied = self._run(("codex", "agents", "model", "inherit"), environment=environment)
+        self.assertNotEqual(0, denied.returncode)
+        self.assertEqual(original, config.read_text())
+        for _ in range(2):
+            result = self._run(("codex", "agents", "model", "inherit", "--yes"), environment=environment)
+            self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual('model = "parent"\n[agents]\nmax_depth = 2\n', config.read_text())
+        self.assertEqual(original, (codex_home / "config.toml.hukuhaka-backup").read_text())
+
+    def test_optional_runner_adoption_and_recommended_removal(self) -> None:
+        state, codex_home = self._install_fake_codex()
+        environment = self._environment(
+            CODEX_HOME=str(codex_home), FAKE_CODEX_STATE=str(state), FAKE_SOURCE_ROOT=str(ROOT),
+        )
+        role = codex_home / "agents/result-runner.toml"
+        role.parent.mkdir()
+        role.write_text("personal runner")
+        before = role.read_bytes()
+        arguments = ("codex", "install", "--components", "result-runner", "--yes")
+        conflict = self._run(arguments, environment=environment)
+        self.assertNotEqual(0, conflict.returncode)
+        self.assertEqual(before, role.read_bytes())
+        role.write_bytes((ROOT / "agents/result-runner.toml").read_bytes())
+        result = self._run(arguments, environment=environment)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue((codex_home / ".hukuhaka-result-runner-manifest.json").exists())
+        result = self._run(("codex", "install", "--recommended", "--yes"), environment=environment)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(role.exists())
+        self.assertNotIn("hukuhaka-result-runner:begin", (codex_home / "AGENTS.md").read_text())
+
+    def test_optional_scout_repeat_coexistence_and_recommended_removal(self) -> None:
+        state, codex_home = self._install_fake_codex()
+        environment = self._environment(
+            CODEX_HOME=str(codex_home), FAKE_CODEX_STATE=str(state), FAKE_SOURCE_ROOT=str(ROOT),
+        )
+        agents = codex_home / "agents"
+        agents.mkdir()
+        personal = agents / "personal-agent.toml"
+        personal.write_text("personal agent\n", encoding="utf-8")
+        arguments = (
+            "codex",
+            "install",
+            "--components",
+            "astra_worker,result-runner,evidence-scout",
+            "--yes",
+        )
+
+        first = self._run(arguments, environment=environment)
+        second = self._run(arguments, environment=environment)
+
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertFalse((codex_home / "AGENTS.md").exists())
+        for name in ("astra_worker", "result-runner", "evidence-scout"):
+            self.assertEqual(
+                (ROOT / "agents" / (name + ".toml")).read_bytes(),
+                (agents / (name + ".toml")).read_bytes(),
+            )
+            manifest = codex_home / (".hukuhaka-" + name + "-manifest.json")
+            self.assertEqual(4, json.loads(manifest.read_text())["schemaVersion"])
+        self.assertEqual("personal agent\n", personal.read_text(encoding="utf-8"))
+        self.assertFalse((codex_home / "models-luna-v2.json").exists())
+
+        recommended = self._run(
+            ("codex", "install", "--recommended", "--yes"),
+            environment=environment,
+        )
+        self.assertEqual(0, recommended.returncode, recommended.stderr)
+        for name in ("astra_worker", "result-runner", "evidence-scout"):
+            self.assertFalse((agents / (name + ".toml")).exists())
+            self.assertFalse(
+                (codex_home / (".hukuhaka-" + name + "-manifest.json")).exists()
+            )
+        self.assertEqual("personal agent\n", personal.read_text(encoding="utf-8"))
+        routing = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertNotIn("hukuhaka-evidence-scout:begin", routing)
+
     def test_codex_live_install_smoke_with_local_source(self) -> None:
         result = subprocess.run(
             (
@@ -541,15 +715,15 @@ fi
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn(
-            "Codex Evidence Scout live install verified for v{}".format(VERSION),
+            "Codex Worker, Runner, and Scout live install verified for v{}".format(VERSION),
             result.stdout,
         )
 
-    @unittest.skipUnless(shutil.which("codex"), "codex CLI not available")
+    @unittest.skipUnless(os.environ.get("HUKUHAKA_RUN_LIVE_CLI") == "1", "explicit scripts/validate.sh --live-cli check")
     def test_installed_codex_cli_temp_home_lifecycle(self) -> None:
+        self.assertTrue(shutil.which("codex"), "--live-cli requires an installed Codex CLI")
         live_cache = Path.home() / ".codex" / "models_cache.json"
-        if not live_cache.is_file():
-            self.skipTest("live Codex model cache not available")
+        self.assertTrue(live_cache.is_file(), "--live-cli requires a local Codex model cache")
         codex_home = self.temp / "real-codex-home"
         codex_home.mkdir()
         shutil.copy2(live_cache, codex_home / "models_cache.json")
@@ -565,11 +739,23 @@ fi
 
         first = self._run(arguments, environment=environment)
         second = self._run(arguments, environment=environment)
+        roles = ("codex", "install", "--components",
+                 "agents-md,astra_worker,result-runner,evidence-scout", "--yes")
+        roles_first = self._run(roles, environment=environment)
+        installed_roles = {
+            name: (codex_home / "agents" / (name + ".toml")).read_bytes()
+            for name in ("astra_worker", "result-runner", "evidence-scout")
+        } if roles_first.returncode == 0 else {}
+        roles_second = self._run(roles, environment=environment)
         first_remove = self._run(("codex", "uninstall", "--yes"), environment=environment)
         second_remove = self._run(("codex", "uninstall", "--yes"), environment=environment)
 
         self.assertEqual(0, first.returncode, first.stderr)
         self.assertEqual(0, second.returncode, second.stderr)
+        self.assertEqual(0, roles_first.returncode, roles_first.stderr)
+        self.assertEqual(0, roles_second.returncode, roles_second.stderr)
+        for name, content in installed_roles.items():
+            self.assertEqual((ROOT / "agents" / (name + ".toml")).read_bytes(), content)
         self.assertEqual(0, first_remove.returncode, first_remove.stderr)
         self.assertEqual(0, second_remove.returncode, second_remove.stderr)
         config = (codex_home / "config.toml").read_text(encoding="utf-8")

@@ -3,9 +3,50 @@
 All notable changes to hukuhaka-harness are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Plugin versions (`marketplace/<plugin>/{.claude-plugin,.codex-plugin}/plugin.json`)
-are independent from the repository version. Dual-host manifests share one
-plugin version.
+Plugin versions (`marketplace/<plugin>/.codex-plugin/plugin.json`) are
+independent from the repository version.
+
+## [1.2.0] — 2026-09-08
+
+### Added
+
+- Added the recommended Codex-only **UI/UX Foundation 0.1.0** plugin for
+  source-grounded design systems, mockup/implementation synchronization, and
+  rendered verification.
+- Added the experimental, opt-in **Project Docs 0.1.3** plugin and optional
+  read-only Project Doc Reader for manifest-guided document lookup and impact
+  review. Neither is included in recommended installs.
+
+### Changed
+
+- Updated **Engineering Plan to 0.2.3** and **Worklog to 0.4.1** for the
+  Codex-only instructions, completion boundaries, and verification reuse rules.
+- Made the active packages, installer, and documentation Codex-only. Removed
+  the retired Claude integration from the supported distribution.
+- Updated **Report Planner from 0.6.0 to 0.7.2**. Planning finalizes content in
+  `spec.md`; the bundled designer owns `design.md`, construction, and visual
+  verification. Existing combined and paired plans retain compatibility.
+- Global guidance now prohibits unnecessary testing and evaluation expansion,
+  continues authorized work, and reuses valid checks for unchanged inputs.
+- Installation and recommended settings disable subagents, including optional
+  role reinstalls. Removed global subagent routing; preserved optional role
+  files and existing configuration backup and validation safeguards.
+- Updated optional Worker, Runner, and Scout assignment/result contracts.
+  Worker uses Sol medium; Runner and Scout use Luna xhigh. Notification wait
+  minimum/default settings remain 120 seconds for a future re-enablement.
+- Added an explicit agent-model inheritance operation that preserves role pins
+  and unrelated settings. Agent upgrades remove unchanged legacy routing
+  blocks while reporting edited blocks as conflicts.
+- Validation reports suite durations, runs bounded parallel suites, and reuses
+  successful checks only for matching inputs. Installed-CLI lifecycle checks
+  remain available through `scripts/validate.sh --live-cli`.
+
+### Known limitations
+
+- With subagents disabled, Report Planner's delegated construction and Project
+  Docs' Reader-dependent operations remain unavailable under their current
+  instructions. Planning and explicit Project Docs maintenance remain usable;
+  automatic parent execution has not been verified.
 
 ## [1.1.17] — 2026-09-06
 
