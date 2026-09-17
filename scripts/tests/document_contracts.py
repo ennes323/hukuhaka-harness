@@ -17,6 +17,7 @@ HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 CURRENT_DOCS = (
     "AGENTS.md",
     "README.md",
+    "INSTALL.md",
     "docs/README.md",
     "docs/host-support.md",
     "docs/hukuhaka-project-docs/README.md",
@@ -135,7 +136,8 @@ def validate_current_docs(root: Path = ROOT) -> list[str]:
             if stale in text:
                 errors.append(f"{relative}: current contract contains obsolete Luna term {stale}")
 
-    public_paths = [root / "README.md"] + sorted((root / "marketplace").glob("*/README.md"))
+    public_paths = [root / name for name in ("README.md", "INSTALL.md") if (root / name).is_file()]
+    public_paths += sorted((root / "marketplace").glob("*/README.md"))
     for path in public_paths:
         text = path.read_text(encoding="utf-8")
         if re.search(r"\]\((?:\.\./)*docs/", text):

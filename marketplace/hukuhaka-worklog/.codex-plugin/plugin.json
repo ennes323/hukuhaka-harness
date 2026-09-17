@@ -1,7 +1,7 @@
 {
   "name": "hukuhaka-worklog",
-  "version": "0.4.1",
-  "description": "Maintain current project work and durable completion or closure history in a shared host-neutral worklog.",
+  "version": "0.5.0",
+  "description": "Maintain project working memory, retain outcomes and checkpoints, and automatically archive older history.",
   "author": {
     "name": "hukuhaka"
   },
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Hukuhaka Worklog",
     "shortDescription": "Keep current work and decision history consistent.",
-    "longDescription": "Record current work in one host-neutral file, move completed or closed outcomes into durable history, and run setup, status, and archive before model invocation.",
+    "longDescription": "Keep English progress notes, nested steps, decisions, and checkpoints across sessions. Trusted hooks archive older history after changelog edits; setup, status, and manual archive remain available as commands.",
     "developerName": "hukuhaka",
     "category": "Productivity",
     "capabilities": [

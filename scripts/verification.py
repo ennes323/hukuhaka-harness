@@ -7,7 +7,6 @@ Remote readiness and authenticated model calls must not use this module.
 from __future__ import annotations
 
 import hashlib
-import functools
 import json
 import math
 import os
@@ -62,10 +61,8 @@ def tree_digest(root: Path) -> str:
     return hasher.hexdigest()
 
 
-@functools.lru_cache(maxsize=32)
-def _binary_digest(path: str, metadata: tuple[int, ...]) -> str:
-    # ctime/inode also invalidate this per-process memo when an update preserves
-    # the executable's size, mtime, and advertised version.
+def _binary_digest(path: str) -> str:
+    # Filesystem timestamp resolution cannot prove executable bytes are unchanged.
     with open(path, "rb") as handle:
         hasher = hashlib.sha256()
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -83,7 +80,7 @@ def tool_identity(command: str) -> object:
     if result.returncode:
         raise VerificationError("cannot identify {}".format(command))
     metadata = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-    binary_hash = _binary_digest(str(binary), metadata)
+    binary_hash = _binary_digest(str(binary))
     after = binary.stat()
     if metadata != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
         raise VerificationError("{} changed during input identification".format(command))

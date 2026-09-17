@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Doc Reader response v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requestId", "mode", "root", "status", "manifest", "selectedDocuments", "excludedDocuments", "answers", "conflicts", "budgetUsed", "errors"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 2},
+    "requestId": {"type": ["string", "null"]},
+    "mode": {"enum": ["context", "impact", null]},
+    "root": {"type": ["string", "null"]},
+    "status": {"enum": ["complete", "partial", "unavailable"]},
+    "manifest": {"const": "project-docs.json"},
+    "selectedDocuments": {"type": "array", "items": {"$ref": "#/$defs/selectedDocument"}},
+    "excludedDocuments": {"type": "array", "items": {"$ref": "#/$defs/excludedDocument"}},
+    "answers": {"type": "array", "items": {"$ref": "#/$defs/answer"}},
+    "conflicts": {"type": "array", "items": {"$ref": "#/$defs/conflict"}},
+    "requiredChecks": {"type": "array", "items": {"$ref": "#/$defs/requiredCheck"}},
+    "affectedDocuments": {"type": "array", "items": {"$ref": "#/$defs/affectedDocument"}},
+    "budgetUsed": {"$ref": "#/$defs/budgetUsed"},
+    "errors": {"type": "array", "items": {"$ref": "#/$defs/error"}}
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1}
+      }
+    },
+    "selectedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "reason", "role", "status", "authority", "bytes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"},
+        "path": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "pattern": "\\S"},
+        "role": {"enum": ["contract", "operations", "decision", "guide", "research", "history"]},
+        "status": {"enum": ["current", "draft", "historical"]},
+        "authority": {"enum": ["normative", "advisory", "evidence"]},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "excludedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "reason"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"},
+        "path": {"type": "string", "minLength": 1},
+        "reason": {"enum": ["not-relevant", "not-required-for-task-frame", "document-limit", "byte-limit", "read-error"]}
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["questionId", "status", "answer", "sources", "reason"],
+      "properties": {
+        "questionId": {"type": "string", "pattern": "\\S"},
+        "status": {"enum": ["answered", "unknown"]},
+        "answer": {"type": "string"},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "reason": {"type": "string"}
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "sources"],
+      "properties": {
+        "statement": {"type": "string", "pattern": "\\S"},
+        "sources": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/source"}}
+      }
+    },
+    "requiredCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "documentId", "basis", "sources"],
+      "properties": {
+        "route": {"type": "string", "pattern": "\\S"},
+        "documentId": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"},
+        "basis": {"enum": ["content", "metadata"]},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}}
+      }
+    },
+    "affectedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "reason", "requiredAction", "verification", "basis", "sources"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"},
+        "path": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "pattern": "\\S"},
+        "requiredAction": {"enum": ["review", "update", "archive", "none"]},
+        "verification": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+        "basis": {"enum": ["content", "metadata"]},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}}
+      }
+    },
+    "budgetUsed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifestBytes", "documentBytes", "documents", "maxDocuments", "maxBytes", "truncated"],
+      "properties": {
+        "manifestBytes": {"type": "integer", "minimum": 0},
+        "documentBytes": {"type": "integer", "minimum": 0},
+        "documents": {"type": "integer", "minimum": 0},
+        "maxDocuments": {"type": ["integer", "null"], "minimum": 1, "maximum": 32},
+        "maxBytes": {"type": ["integer", "null"], "minimum": 1, "maximum": 1048576},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "path", "message"],
+      "properties": {
+        "code": {"type": "string", "pattern": "\\S"},
+        "path": {"type": "string", "pattern": "\\S"},
+        "message": {"type": "string", "pattern": "\\S"}
+      }
+    }
+  }
+}

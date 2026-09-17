@@ -30,6 +30,8 @@ from .codex_config import (
 )
 from .common import InstallerError, StateError, load_json
 from .terminal import HostInstallPlan, csv_items, csv_value, prompt_install_plan
+from .settings import Settings, cli_literal, read_profile, wizard
+from .settings_catalog import RECOMMENDED, KEYS
 
 
 HOST_LABELS = {"codex": "Codex"}
@@ -300,14 +302,9 @@ class Installer:
                     csv_value(sorted(before - desired)) or "none"
                 )
             )
-            codex_agents = {
-                str(component["name"])
-                for component in self.catalog.get("components", [])
-                if component.get("kind") == "agent"
-                and "codex" in component.get("hosts", {})
-            }
-            if plan.host == "codex" and desired & codex_agents:
-                print("    Agent runtime:  multi-agent enabled")
+            if plan.host == "codex" and (plan.reset or desired or before):
+                print("    Agent runtime:  existing settings preserved (V1/V2 state not inferred)")
+                print("    Optional agent files do not enable subagents.")
             if plan.configure_codex:
                 print("  Settings")
                 print("    Global defaults: update")
@@ -496,15 +493,6 @@ class Installer:
                 "components": self._components(host),
                 "selected": state.components or set(self._recommended(host)),
             }
-            if host == "codex":
-                section["context_status"] = CodexContextPolicy(
-                    self._codex().codex_home,
-                    dry_run=bool(getattr(self.args, "dry_run", False)),
-                ).state().label
-                section["agent_policy_status"] = CodexAgentPolicy(
-                    self._codex().codex_home,
-                    dry_run=bool(getattr(self.args, "dry_run", False)),
-                ).state().label
             sections.append(section)
 
         plans = prompt_install_plan(sys.stdin, sys.stdout, sections=sections)
@@ -518,6 +506,8 @@ class Installer:
             config_editor = CodexConfigEditor(
                 self._codex().codex_home,
                 dry_run=bool(getattr(self.args, "dry_run", False)),
+                managed_keys=KEYS,
+                stage="settings",
             )
             settings = prompt_settings(config_editor.inspect())
             config_plan = config_editor.plan(settings)
@@ -826,6 +816,9 @@ class Installer:
             )
             return 1
 
+        if self.args.action == "settings":
+            return self._settings()
+
         if self.args.action == "context":
             return self._context_policy()
 
@@ -833,31 +826,10 @@ class Installer:
             return self._agent_policy()
 
         if self.args.action == "configure":
-            editor = CodexConfigEditor(
-                self._codex().codex_home,
-                dry_run=self.args.dry_run,
-            )
-            if self.args.recommended:
-                settings = RECOMMENDED_SETTINGS
-            else:
-                if not self._tty_available():
-                    print(
-                        "installer: codex configure requires a terminal or "
-                        "--recommended",
-                        file=sys.stderr,
-                    )
-                    return 2
-                settings = prompt_settings(editor.inspect())
-            plan = editor.plan(settings)
-            if plan.changed:
-                print(plan.diff(), end="")
-            else:
-                print("Global Codex config already matches the selected values.")
-            if not self._confirm():
-                print("Exit. No changes were made.")
-                return 0
-            editor.apply(plan, show_diff=False)
-            return 0
+            # Compatibility spelling for the unified settings interface.
+            self.args.settings_action = "apply" if self.args.recommended else None
+            self.args.file = None
+            return self._settings()
 
         if self.args.action == "uninstall":
             current = self._current(host)
@@ -903,11 +875,54 @@ class Installer:
             return self.interactive()
         return self.automation()
 
+    def _settings(self) -> int:
+        args = self.args
+        manager = Settings(self._codex().codex_home, dry_run=getattr(args, "dry_run", False))
+        action = args.settings_action
+        if action == "show":
+            manager.show(as_json=args.json)
+            return 0
+        if action == "history":
+            for identifier, record in manager.records():
+                print("{}  {}  {}".format(identifier, record.get("label", "settings"), ", ".join(record["after"]) or "formatting only"))
+            return 0
+        if action == "export":
+            manager.export(args.file.expanduser())
+            return 0
+        if action is None:
+            if not self._tty_available():
+                manager.show()
+                return 0
+            plan = wizard(manager)
+            if plan is None:
+                return 0
+        elif action == "set":
+            plan = manager.plan({tuple(args.key.split(".")): cli_literal(args.key, args.value)})
+        elif action == "unset":
+            plan = manager.plan(remove=(tuple(args.key.split(".")),))
+        elif action in ("apply", "diff"):
+            plan = manager.plan(RECOMMENDED if args.recommended else read_profile(args.file.expanduser()))
+        elif action == "restore":
+            plan = manager.restore_plan(args.receipt)
+        else:
+            plan = manager.plan(organize=True)
+        print(plan.diff(), end="")
+        if action == "diff":
+            return 0
+        if not plan.changed or self._confirm():
+            label = action or "wizard"
+            if action == "apply":
+                label = "recommended" if args.recommended else "profile " + args.file.name
+            if action == "restore":
+                label = "restore " + args.receipt
+            manager.apply(plan, label=label)
+        return 0
+
 
 def _add_mutation_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--yes", action="store_true", help="skip confirmation")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="preview without applying changes")
+    parser.add_argument("--force", action="store_true", help="authorize replacement of conflicting managed files")
 
 
 def _add_bootstrap_passthrough(parser: argparse.ArgumentParser) -> None:
@@ -936,28 +951,75 @@ def _add_selection(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Install hukuhaka-harness")
+    parser = argparse.ArgumentParser(
+        prog="scripts/install.sh",
+        description="Install and manage hukuhaka-harness for Codex.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Run without arguments in a terminal for interactive installation.\n"
+            "Examples:\n"
+            "  scripts/install.sh codex install --recommended --dry-run\n"
+            "  scripts/install.sh codex install --recommended --yes\n"
+            "  scripts/install.sh codex uninstall --yes\n\n"
+            "Component installation preserves independent settings, including V1/V2 agent switches.\n"
+            "A local checkout uses its own files; remote bootstrap defaults to the latest release.\n"
+            "See INSTALL.md for updates, selection, settings, and recovery."
+        ),
+    )
     parser.add_argument("--repo-root", type=Path, required=True, help=argparse.SUPPRESS)
     parser.add_argument("--resolved-version", help=argparse.SUPPRESS)
     parser.add_argument("--local-source", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--version", help=argparse.SUPPRESS)
-    parser.add_argument("--source-dir", help=argparse.SUPPRESS)
+    parser.add_argument("--version", metavar="X.Y.Z", help="select a remote release or require this local source version")
+    parser.add_argument("--source-dir", help="use an existing source checkout")
     hosts = parser.add_subparsers(dest="host")
     for host in ("codex",):
-        host_parser = hosts.add_parser(host)
+        host_parser = hosts.add_parser(host, help="manage Codex components and settings")
         actions = host_parser.add_subparsers(dest="action", required=True)
         for action in ("install", "reset"):
-            action_parser = actions.add_parser(action)
+            action_parser = actions.add_parser(
+                action,
+                help="install/update the desired set" if action == "install" else "rebuild the desired managed set",
+                description="Select the complete desired managed set. Independent settings are preserved.",
+            )
             _add_selection(action_parser)
             if action == "reset":
                 action_parser.add_argument("--include-template", action="store_true")
             _add_mutation_flags(action_parser)
             _add_bootstrap_passthrough(action_parser)
-        uninstall = actions.add_parser("uninstall")
+        uninstall = actions.add_parser("uninstall", help="remove managed components; preserve independent settings")
         _add_mutation_flags(uninstall)
         _add_bootstrap_passthrough(uninstall)
         if host == "codex":
-            configure = actions.add_parser("configure")
+            settings = actions.add_parser("settings", help="inspect, edit, compare, restore and organize settings")
+            settings.add_argument("--yes", action="store_true")
+            settings.add_argument("--dry-run", action="store_true")
+            _add_bootstrap_passthrough(settings)
+            setting_actions = settings.add_subparsers(dest="settings_action")
+            show = setting_actions.add_parser("show", help="saved values and provenance, not effective session state")
+            show.add_argument("--json", action="store_true")
+            _add_bootstrap_passthrough(show)
+            history = setting_actions.add_parser("history")
+            _add_bootstrap_passthrough(history)
+            export = setting_actions.add_parser("export", help="create a partial TOML profile; never overwrite")
+            export.add_argument("file", type=Path)
+            export.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
+            _add_bootstrap_passthrough(export)
+            for operation in ("set", "unset", "apply", "diff", "restore", "organize"):
+                sub = setting_actions.add_parser(operation)
+                if operation in ("set", "unset"):
+                    sub.add_argument("key")
+                if operation == "set":
+                    sub.add_argument("value")
+                if operation in ("apply", "diff"):
+                    source = sub.add_mutually_exclusive_group(required=True)
+                    source.add_argument("--file", type=Path)
+                    source.add_argument("--recommended", action="store_true")
+                if operation == "restore":
+                    sub.add_argument("receipt")
+                sub.add_argument("--yes", action="store_true", default=argparse.SUPPRESS)
+                sub.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
+                _add_bootstrap_passthrough(sub)
+            configure = actions.add_parser("configure", help="review or apply global Codex settings")
             configure.add_argument("--recommended", action="store_true")
             configure.add_argument("--yes", action="store_true")
             configure.add_argument("--dry-run", action="store_true")
@@ -985,7 +1047,7 @@ def build_parser() -> argparse.ArgumentParser:
             _add_bootstrap_passthrough(context_reset)
             agents = actions.add_parser(
                 "agents",
-                help="set or reset only Codex agent execution overrides",
+                help="manage agent capacity and model overrides; does not enable subagents",
             )
             _add_bootstrap_passthrough(agents)
             agent_actions = agents.add_subparsers(dest="agent_action")

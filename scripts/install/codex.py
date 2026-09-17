@@ -22,7 +22,6 @@ from .common import (
 )
 from .codex_config import (
     EVIDENCE_SCOUT_SETTINGS,
-    SUBAGENT_SETTINGS,
     CodexConfigEditor,
     ConfigPlan,
 )
@@ -715,7 +714,7 @@ class CodexCustomAgentDeployment:
                 print("  [dry-run] install {} -> {}".format(self.name, self.target))
                 if routing is not None:
                     print("  [dry-run] remove obsolete {} routing block".format(self.name))
-                print("  [dry-run] disable multi-agent")
+                print("  [dry-run] preserve agent runtime settings")
                 for target in resources:
                     print(
                         "  [dry-run] install {} resource -> {}".format(
@@ -751,7 +750,7 @@ class CodexCustomAgentDeployment:
             print("  [ok] removed obsolete {} routing block".format(self.name))
         if remove_catalog:
             print("  [ok] removed obsolete Luna v2 model catalog")
-        print("  [ok] multi-agent disabled")
+        print("  [ok] agent runtime settings preserved")
 
     def _plan_uninstall(
         self,
@@ -1745,15 +1744,7 @@ class CodexInstaller:
             self._custom_agent(name, enabled=False).uninstall()
             if name in existing_agents:
                 self.completed.append("removed {}".format(name))
-        # Apply the same feature policy even when no optional agent is selected.
-        with installer_state(self.codex_home, dry_run=self.dry_run):
-            config = CodexConfigEditor(
-                self.codex_home,
-                dry_run=self.dry_run,
-                managed_keys=tuple(SUBAGENT_SETTINGS),
-                stage="install-subagent-settings",
-            )
-            config.apply(config.plan(SUBAGENT_SETTINGS), show_diff=False)
+        # Component selection does not own the user's execution policy.
         if not self.dry_run:
             self.verify(desired)
 

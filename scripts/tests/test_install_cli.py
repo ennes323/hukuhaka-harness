@@ -17,6 +17,34 @@ VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 class InstallCliTests(unittest.TestCase):
+    def test_unified_settings_cli_profile_receipt_and_restore(self) -> None:
+        state, codex_home = self._install_fake_codex()
+        environment = self._environment(CODEX_HOME=str(codex_home), FAKE_CODEX_STATE=str(state), FAKE_SOURCE_ROOT=str(ROOT))
+        original = 'model = "personal"\nmodel_verbosity = "low"\n'
+        config = codex_home / "config.toml"
+        config.write_text(original)
+        profile = self.temp / "experiment.toml"
+        profile.write_text('model_verbosity = "high"\n')
+        root_flag = self._run(("codex", "settings", "--dry-run", "set", "model_verbosity", "high", "--yes"), environment=environment)
+        self.assertEqual(0, root_flag.returncode, root_flag.stderr)
+        self.assertEqual(original, config.read_text())
+        self.assertFalse((codex_home / ".hukuhaka-settings-history").exists())
+        diff = self._run(("codex", "settings", "diff", "--file", str(profile)), environment=environment)
+        self.assertEqual(0, diff.returncode, diff.stderr)
+        self.assertEqual(original, config.read_text())
+        self.assertFalse((codex_home / ".hukuhaka-settings-history").exists())
+        applied = self._run(("codex", "settings", "apply", "--file", str(profile), "--yes"), environment=environment)
+        self.assertEqual(0, applied.returncode, applied.stderr)
+        shown = self._run(("codex", "settings", "show", "--json"), environment=environment)
+        self.assertEqual(0, shown.returncode, shown.stderr)
+        payload = json.loads(shown.stdout)
+        row = next(row for row in payload["options"] if row["key"] == "model_verbosity")
+        self.assertEqual('"high"', row["value"])
+        identifier = row["origin"].removeprefix("receipt ")
+        restored = self._run(("codex", "settings", "restore", identifier, "--yes"), environment=environment)
+        self.assertEqual(0, restored.returncode, restored.stderr)
+        self.assertEqual(original, config.read_text())
+
     def setUp(self) -> None:
         self.temp_context = tempfile.TemporaryDirectory(prefix="hukuhaka install cli ")
         self.temp = Path(self.temp_context.name)
@@ -172,14 +200,16 @@ fi
             environment=environment,
         )
         self.assertEqual(0, dry_run.returncode, dry_run.stderr)
-        self.assertIn("plugin add hukuhaka-report-planner@hukuhaka-harness", dry_run.stdout)
+        self.assertNotIn("plugin add hukuhaka-report-planner@hukuhaka-harness", dry_run.stdout)
         self.assertIn("plugin add hukuhaka-worklog@hukuhaka-harness", dry_run.stdout)
         self.assertNotIn("install evidence-scout", dry_run.stdout)
         self.assertNotIn("install result-runner", dry_run.stdout)
+        self.assertIn("Agent runtime:  existing settings preserved (V1/V2 state not inferred)", dry_run.stdout)
+        self.assertNotIn("multi-agent enabled", dry_run.stdout)
         self.assertFalse((state / "marketplace").exists())
         self.assertEqual("", (state / "plugins").read_text(encoding="utf-8"))
 
-    def test_guidance_install_disables_subagents_and_preserves_other_config(self) -> None:
+    def test_guidance_install_preserves_all_config(self) -> None:
         state, codex_home = self._install_fake_codex()
         environment = self._environment(
             CODEX_HOME=str(codex_home), FAKE_CODEX_STATE=str(state),
@@ -196,9 +226,8 @@ fi
         for _ in range(2):
             result = self._run(args, environment=environment)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(original.replace("multi_agent = true", "multi_agent = false"),
-                             config.read_text())
-        self.assertEqual(original, (codex_home / "config.toml.hukuhaka-backup").read_text())
+            self.assertEqual(original, config.read_text())
+        self.assertFalse((codex_home / "config.toml.hukuhaka-backup").exists())
         self.assertNotIn("# Subagent Routing", (codex_home / "AGENTS.md").read_text())
 
     def test_fake_codex_project_docs_plugin_and_reader_are_independently_installable(self) -> None:
@@ -239,6 +268,7 @@ fi
             environment=environment,
         )
         self.assertEqual(0, reader_only.returncode, reader_only.stderr)
+        self.assertIn("Agent runtime:  existing settings preserved (V1/V2 state not inferred)", reader_only.stdout)
         self.assertEqual("", (state / "plugins").read_text(encoding="utf-8"))
         self.assertTrue(
             (codex_home / ".hukuhaka-project-doc-reader-manifest.json").is_file()
@@ -255,7 +285,9 @@ fi
         )
         self.assertEqual(4, reader_manifest["schemaVersion"])
         self.assertEqual(
-            ["agents/project-doc-reader-tool.py"],
+            ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
+             "agents/project-doc-reader/reader-request-v2.schema.json",
+             "agents/project-doc-reader/reader-response-v2.schema.json"],
             [item["target"] for item in reader_manifest["resources"]],
         )
         self.assertFalse((codex_home / "AGENTS.md").exists())
@@ -314,26 +346,17 @@ fi
         self.assertEqual(0, second.returncode, second.stderr)
         self.assertRegex(
             first.stdout,
-            r"hukuhaka-worklog +not installed → 0\.4\.1",
+            r"hukuhaka-worklog +not installed → 0\.5\.0",
         )
         self.assertRegex(
             second.stdout,
-            r"hukuhaka-worklog +0\.4\.1 \(same version\)",
+            r"hukuhaka-worklog +0\.5\.0 \(same version\)",
         )
-        self.assertRegex(
-            first.stdout,
-            r"hukuhaka-uiux-foundation +not installed → 0\.1\.0",
-        )
-        self.assertRegex(
-            second.stdout,
-            r"hukuhaka-uiux-foundation +0\.1\.0 \(same version\)",
-        )
+        self.assertNotIn("plugin add hukuhaka-uiux-foundation", first.stdout)
+        self.assertNotIn("plugin add hukuhaka-uiux-foundation", second.stdout)
         self.assertEqual(
             {
-                "hukuhaka-report-planner",
-                "hukuhaka-engineering-plan",
                 "hukuhaka-worklog",
-                "hukuhaka-uiux-foundation",
             },
             set((state / "plugins").read_text(encoding="utf-8").splitlines()),
         )
@@ -345,8 +368,9 @@ fi
             "hukuhaka-evidence-scout:begin",
             (codex_home / "AGENTS.md").read_text(encoding="utf-8"),
         )
-        config = (codex_home / "config.toml").read_text(encoding="utf-8")
-        self.assertIn("multi_agent = false", config)
+        config_path = codex_home / "config.toml"
+        config = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        self.assertNotIn("multi_agent", config)
         self.assertNotIn("max_concurrent_threads_per_session", config)
         self.assertNotIn("max_depth", config)
         self.assertNotIn("model_catalog_json", config)
@@ -370,7 +394,7 @@ fi
         self.assertFalse((codex_home / ".hukuhaka-evidence-scout-manifest.json").exists())
         self.assertFalse((codex_home / "agents" / "evidence-scout.toml").exists())
         self.assertFalse((codex_home / "models-luna-v2.json").exists())
-        self.assertNotIn("model_catalog_json", (codex_home / "config.toml").read_text())
+        self.assertFalse((codex_home / "config.toml").exists())
 
         first_remove = self._run(("codex", "uninstall", "--yes"), environment=environment)
         second_remove = self._run(("codex", "uninstall", "--yes"), environment=environment)
@@ -569,10 +593,8 @@ fi
         self.assertNotIn("max_depth", config)
         self.assertIn('default_subagent_model = "user-model"', config)
         self.assertIn('default_subagent_reasoning_effort = "high"', config)
-        self.assertEqual(
-            original.encode(),
-            (codex_home / "config.toml.hukuhaka-backup").read_bytes(),
-        )
+        self.assertEqual(original, config)
+        self.assertFalse((codex_home / "config.toml.hukuhaka-backup").exists())
 
         # Legacy capacity adoption is authorized by the old Scout manifest,
         # not by installing a new Worker. Seed that historical ownership.
@@ -718,6 +740,27 @@ fi
             "Codex Worker, Runner, and Scout live install verified for v{}".format(VERSION),
             result.stdout,
         )
+
+    @unittest.skipUnless(os.environ.get("HUKUHAKA_RUN_LIVE_CLI") == "1", "explicit scripts/validate.sh --live-cli check")
+    def test_installed_codex_cli_settings_round_trip(self) -> None:
+        self.assertTrue(shutil.which("codex"), "--live-cli requires an installed Codex CLI")
+        codex_home = self.temp / "real-settings-home"
+        codex_home.mkdir()
+        config = codex_home / "config.toml"
+        original = 'model_verbosity = "low"\n[features]\nmulti_agent = false\n'
+        config.write_text(original)
+        environment = self._environment(CODEX_HOME=str(codex_home))
+        profile = self.temp / "real-profile.toml"
+        profile.write_text('model_verbosity = "high"\n[features.multi_agent_v2]\nmin_wait_timeout_ms = 120000\ndefault_wait_timeout_ms = 120000\nmax_wait_timeout_ms = 3600000\n')
+        changed = self._run(("codex", "settings", "apply", "--file", str(profile), "--yes"), environment=environment)
+        self.assertEqual(0, changed.returncode, changed.stderr + changed.stdout)
+        receipt = next((codex_home / ".hukuhaka-settings-history").glob("*.json")).stem
+        restored = self._run(("codex", "settings", "restore", receipt, "--yes"), environment=environment)
+        self.assertEqual(0, restored.returncode, restored.stderr + restored.stdout)
+        self.assertIn('model_verbosity = "low"', config.read_text())
+        self.assertNotIn("wait_timeout_ms", config.read_text())
+        organized = self._run(("codex", "settings", "organize", "--yes"), environment=environment)
+        self.assertEqual(0, organized.returncode, organized.stderr + organized.stdout)
 
     @unittest.skipUnless(os.environ.get("HUKUHAKA_RUN_LIVE_CLI") == "1", "explicit scripts/validate.sh --live-cli check")
     def test_installed_codex_cli_temp_home_lifecycle(self) -> None:

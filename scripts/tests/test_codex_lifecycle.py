@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -250,9 +251,37 @@ class CodexLifecycleTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(4, manifest["schemaVersion"])
         self.assertEqual(
-            ["agents/project-doc-reader-tool.py"],
+            ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
+             "agents/project-doc-reader/reader-request-v2.schema.json",
+             "agents/project-doc-reader/reader-response-v2.schema.json"],
             [item["target"] for item in manifest["resources"]],
         )
+        reader = next(item for item in self.catalog["components"] if item["name"] == "project-doc-reader")
+        for resource in reader["resources"]:
+            self.assertEqual((ROOT / resource["source"]).read_bytes(),
+                             (self.codex_home / resource["target"]).read_bytes())
+        # The installed helper must resolve its own validator and both schemas,
+        # independently of the working directory or a separately installed Skill.
+        request = {"schemaVersion": 2, "requestId": "install-test", "mode": "context",
+                   "root": "/no-repository-needed", "task": "Find a contract.",
+                   "action": "inspect", "paths": [], "symbols": [],
+                   "questions": [{"id": "q1", "question": "What governs this?"}],
+                   "budget": {"maxDocuments": 1, "maxBytes": 1024}}
+        response = {"schemaVersion": 2, "requestId": "install-test", "mode": "context",
+                    "root": request["root"], "status": "unavailable", "manifest": "project-docs.json",
+                    "selectedDocuments": [], "excludedDocuments": [], "conflicts": [],
+                    "answers": [{"questionId": "q1", "status": "unknown", "answer": "",
+                                 "sources": [], "reason": "No repository was opened."}],
+                    "requiredChecks": [], "errors": [{"code": "operation.failed", "path": "root",
+                                                         "message": "Repository unavailable."}],
+                    "budgetUsed": {"manifestBytes": 0, "documentBytes": 0, "documents": 0,
+                                   "maxDocuments": 1, "maxBytes": 1024, "truncated": False}}
+        for command, data in (("reader-validate-request", request),
+                              ("reader-validate-response", {"request": request, "response": response})):
+            result = subprocess.run(("python3", str(helper), command), input=json.dumps(data),
+                                    cwd=str(self.codex_home), text=True, capture_output=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertEqual("valid", json.loads(result.stdout)["status"])
 
         manifest["schemaVersion"] = 1
         manifest.pop("resources")
@@ -286,6 +315,8 @@ class CodexLifecycleTests(unittest.TestCase):
             forced._custom_agent("project-doc-reader", enabled=False).uninstall()
         self.assertFalse(helper.exists())
         self.assertFalse(manifest_path.exists())
+        for resource in reader["resources"]:
+            self.assertFalse((self.codex_home / resource["target"]).exists())
 
     def test_reader_resource_source_failure_and_doctor_rollback_leave_no_state(self) -> None:
         reader = next(
@@ -499,8 +530,7 @@ class CodexLifecycleTests(unittest.TestCase):
             reset=True,
             include_template=True,
         )
-        self.assertEqual(original.decode() + "\n[features]\nmulti_agent = false\n",
-                         config.read_text())
+        self.assertEqual(original, config.read_bytes())
         installed = config.read_bytes()
         self.installer().reset(include_template=True)
         self.assertEqual(installed, config.read_bytes())

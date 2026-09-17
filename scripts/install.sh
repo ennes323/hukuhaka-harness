@@ -73,7 +73,7 @@ if [ -n "$SOURCE_DIR" ]; then
     }
     RESOLVED_VERSION="${REQUESTED_VERSION:-$(tr -d '[:space:]' < "$SOURCE_DIR/VERSION")}"
     LOCAL_SOURCE=true
-    echo "Using local source: $SOURCE_DIR"
+    echo "Using local source: $SOURCE_DIR" >&2
 else
     if ! command -v curl >/dev/null 2>&1; then
         echo "Error: curl is required to download hukuhaka-harness." >&2

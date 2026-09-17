@@ -1,4 +1,4 @@
 interface:
   display_name: "Engineering Plan"
-  short_description: "Ground and stress-test implementation plans"
-  default_prompt: "Use $engineering-plan to produce a repository-grounded, decision-complete implementation plan."
+  short_description: "Plan changes around existing responsibilities and contracts"
+  default_prompt: "Use $engineering-plan to develop a repository-grounded plan for this change."

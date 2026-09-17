@@ -1,7 +1,7 @@
 {
   "name": "hukuhaka-project-docs",
-  "version": "0.1.3",
-  "description": "Inventory, validate, audit, and propose synchronized repository documentation manifests without turning derived context into authority.",
+  "version": "0.2.0",
+  "description": "Find governing project documents, assess documentation impact, and maintain an optional repository documentation index.",
   "author": {
     "name": "hukuhaka"
   },
@@ -17,14 +17,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Hukuhaka Project Docs",
-    "shortDescription": "Route and validate repository documentation.",
-    "longDescription": "Inventory repository documents, validate a project-docs.json authority index, audit lifecycle and coverage conflicts, and propose approval-gated bootstrap or synchronization changes.",
+    "shortDescription": "Find project context and keep documentation aligned.",
+    "longDescription": "Find relevant project contracts and checks, review documentation impact, carry authorized documentation updates through verification, and maintain an optional project-docs.json index. Direct workflows work without an index or Reader.",
     "developerName": "hukuhaka",
     "category": "Developer Tools",
     "capabilities": [
       "Read",
+      "Write",
       "Planning"
     ],
-    "defaultPrompt": "Use $project-docs to audit this repository's documentation manifest."
+    "defaultPrompt": "Use $project-docs to find the documents governing this task and assess any documentation impact."
   }
 }

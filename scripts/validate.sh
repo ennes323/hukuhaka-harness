@@ -24,7 +24,8 @@ cd "$REPO_DIR"
 PROFILE=""
 if [ "$#" -eq 1 ] && [ "$1" = "--live-cli" ]; then
     exec env HUKUHAKA_RUN_LIVE_CLI=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
-        scripts.tests.test_install_cli.InstallCliTests.test_installed_codex_cli_temp_home_lifecycle
+        scripts.tests.test_install_cli.InstallCliTests.test_installed_codex_cli_temp_home_lifecycle \
+        scripts.tests.test_install_cli.InstallCliTests.test_installed_codex_cli_settings_round_trip
 elif [ "$#" -eq 0 ]; then
     if [ -f "$SCRIPT_DIR/release/main.py" ] || \
        [ -f "$SCRIPT_DIR/prepush/main.py" ] || \

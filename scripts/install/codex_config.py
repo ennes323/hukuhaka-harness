@@ -24,47 +24,18 @@ from .common import (
 
 Key = Tuple[str, ...]
 
-SUBAGENT_SETTINGS = {
-    ("features", "multi_agent"): "false",
-}  # type: Dict[Key, str]
+from .settings_catalog import RECOMMENDED, WAIT_SETTINGS, CONTEXT_KEYS, CAPACITY_KEYS
 
-AGENT_WAIT_SETTINGS = {
-    ("features", "multi_agent_v2", "min_wait_timeout_ms"): "120000",
-    ("features", "multi_agent_v2", "default_wait_timeout_ms"): "120000",
-}  # type: Dict[Key, str]
-
-
-RECOMMENDED_SETTINGS = {
-    **AGENT_WAIT_SETTINGS,
-    **SUBAGENT_SETTINGS,
-    ("personality",): '"pragmatic"',
-    ("model_reasoning_effort",): '"medium"',
-    ("model_reasoning_summary",): '"concise"',
-    ("model_verbosity",): '"low"',
-    ("agents", "enabled"): "true",
-    (
-        "tui",
-        "status_line",
-    ): '["model-with-reasoning", "context-remaining", "used-tokens", '
-    '"five-hour-limit", "weekly-limit", "git-branch", "current-dir"]',
-    ("tui", "notifications"): '["agent-turn-complete", "approval-requested"]',
-    ("tui", "notification_condition"): '"unfocused"',
-    ("features", "prevent_idle_sleep"): "true",
-}  # type: Dict[Key, str]
-
-# Preserve optional role files without re-enabling subagent execution.
-EVIDENCE_SCOUT_SETTINGS = {
-    **SUBAGENT_SETTINGS,
-    ("agents", "enabled"): "true",
-}  # type: Dict[Key, str]
+# Compatibility exports; the catalog owns all current settings definitions.
+SUBAGENT_SETTINGS = {("features", "multi_agent"): RECOMMENDED[("features", "multi_agent")]}
+AGENT_WAIT_SETTINGS = WAIT_SETTINGS
+RECOMMENDED_SETTINGS = RECOMMENDED
+EVIDENCE_SCOUT_SETTINGS = {}  # type: Dict[Key, str]
 
 # Agent execution capacity is an explicit user policy, separate from component
 # installation and the general Codex defaults wizard. The policy owns only
 # these two settings and records that ownership in its own manifest.
-AGENT_POLICY_KEYS = (
-    ("agents", "max_concurrent_threads_per_session"),
-    ("agents", "max_depth"),
-)
+AGENT_POLICY_KEYS = CAPACITY_KEYS
 AGENT_POLICY_MANIFEST = ".hukuhaka-agent-policy.json"
 
 # Explicit one-shot migration, never part of ordinary install or capacity policy.
@@ -80,11 +51,7 @@ EVIDENCE_SCOUT_DYNAMIC_KEYS = {("model_catalog_json",)}
 # Context policy is intentionally outside the general recommended settings.
 # Its command owns only these explicit top-level overrides and must never make
 # an install, reset, or full config-wizard operation responsible for them.
-CONTEXT_POLICY_KEYS = (
-    ("model_context_window",),
-    ("model_auto_compact_token_limit",),
-    ("model_auto_compact_token_limit_scope",),
-)
+CONTEXT_POLICY_KEYS = CONTEXT_KEYS
 CONTEXT_POLICY_SCOPES = ("total", "body_after_prefix")
 CONTEXT_POLICY_MANIFEST = ".hukuhaka-context-policy.json"
 MODEL_KEY = ("model",)
@@ -367,12 +334,15 @@ def current_values(
     return found
 
 
+def _table_boundaries(lines: Sequence[str]) -> List[int]:
+    # Include array/unknown tables, but not table-like text inside a value.
+    assignments = _parse_assignments("".join(lines))[1]
+    value_lines = {i for item in assignments for i in range(item.start, item.end)}
+    return [i for i, line in enumerate(lines) if i not in value_lines and line.lstrip().startswith("[")]
+
+
 def _section_end(lines: Sequence[str], start: int) -> int:
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("["):
-            return index
-    return len(lines)
+    return min((index for index in _table_boundaries(lines) if index > start), default=len(lines))
 
 
 def update_config(
@@ -499,10 +469,7 @@ def update_config(
     )
 
     if top_level:
-        first_section = next(
-            (index for index, line in enumerate(lines) if line.strip().startswith("[")),
-            len(lines),
-        )
+        first_section = min(_table_boundaries(lines), default=len(lines))
         additions = [
             "{} = {}\n".format(".".join(key), settings[key]) for key in top_level
         ]
@@ -559,58 +526,37 @@ def _decode_string(value: str, fallback: str) -> str:
 
 
 def prompt_settings(current: Mapping[Key, str]) -> Dict[Key, str]:
-    """Ask only about the supported global defaults."""
-    recommended = RECOMMENDED_SETTINGS
-    personality = _prompt_choice(
-        "Personality",
-        _decode_string(current.get(("personality",), ""), "pragmatic"),
-        ("pragmatic", "friendly", "none"),
-    )
-    effort = _prompt_choice(
-        "Reasoning effort",
-        _decode_string(current.get(("model_reasoning_effort",), ""), "medium"),
-        ("medium", "low", "high", "xhigh", "minimal"),
-    )
-    summary = _prompt_choice(
-        "Reasoning summary",
-        _decode_string(current.get(("model_reasoning_summary",), ""), "concise"),
-        ("concise", "auto", "detailed", "none"),
-    )
-    verbosity = _prompt_choice(
-        "Response verbosity",
-        _decode_string(current.get(("model_verbosity",), ""), "low"),
-        ("low", "medium", "high"),
-    )
-    agents_enabled = _prompt_bool(
-        "Enable multi-agent",
-        current.get(("agents", "enabled"), "true").lower() != "false",
-    )
-    notifications = _prompt_bool(
-        "Enable TUI notifications",
-        current.get(("tui", "notifications"), "true").lower() != "false",
-    )
-    idle_sleep = _prompt_bool(
-        "Prevent idle sleep during a turn",
-        current.get(("features", "prevent_idle_sleep"), "true").lower() != "false",
-    )
-    return {
-        ("personality",): json.dumps(personality),
-        ("model_reasoning_effort",): json.dumps(effort),
-        ("model_reasoning_summary",): json.dumps(summary),
-        ("model_verbosity",): json.dumps(verbosity),
-        ("agents", "enabled"): str(agents_enabled).lower(),
-        ("tui", "status_line"): current.get(
-            ("tui", "status_line"), recommended[("tui", "status_line")]
-        ),
-        ("tui", "notifications"): (
-            recommended[("tui", "notifications")] if notifications else "false"
-        ),
-        ("tui", "notification_condition"): current.get(
-            ("tui", "notification_condition"),
-            recommended[("tui", "notification_condition")],
-        ),
-        ("features", "prevent_idle_sleep"): str(idle_sleep).lower(),
-    }
+    """Interactive installation uses the same catalog as settings commands."""
+    from .settings import cli_literal, read_profile
+    from .settings_catalog import OPTIONS
+    selected = {}  # type: Dict[Key, str]
+    group = None
+    for option in OPTIONS:
+        if option.group != group:
+            group = option.group
+            print("\n" + group)
+        raw = current.get(option.path, "[unset]")
+        display = "[custom text]" if option.key == "compact_prompt" and option.path in current else raw
+        print("  {} = {}".format(option.key, display))
+    print("Enter a setting key, 'recommended', 'profile PATH', or blank to review.")
+    while True:
+        key = input("Settings> ").strip()
+        if not key:
+            return selected
+        if key == "recommended":
+            selected.update(RECOMMENDED_SETTINGS)
+        elif key.startswith("profile "):
+            selected.update(read_profile(Path(key[8:]).expanduser()))
+        else:
+            from .settings_catalog import CATALOG
+            option = CATALOG.get(key)
+            if option is None:
+                print("Unknown setting: " + key)
+                continue
+            print(option.description)
+            if option.choices:
+                print("Choices: " + ", ".join(option.choices))
+            selected[option.path] = cli_literal(key, input("Value> "))
 
 
 def prompt_agent_action(state: "AgentPolicyState") -> Optional[str]:
@@ -915,6 +861,11 @@ class CodexConfigEditor:
             )
 
     def apply(self, plan: ConfigPlan, *, show_diff: bool = True) -> bool:
+        if self.stage == "settings":
+            from .settings import Settings
+            if show_diff:
+                print(plan.diff(), end="")
+            return Settings(self.codex_home, dry_run=self.dry_run).apply(plan, label="interactive install") is not None
         if not plan.changed:
             print("Codex config: already matches the selected defaults.")
             return False
@@ -968,6 +919,9 @@ class CodexConfigEditor:
         if self.dry_run:
             return
         current, existed, _ = self._read()
+        if not existed and not plan.existed and not plan.proposed:
+            self._doctor()
+            return
         if not existed:
             raise StateError(
                 "Codex config.toml is missing after component installation",

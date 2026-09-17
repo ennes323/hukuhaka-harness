@@ -86,7 +86,7 @@ Never overwrite an unrelated design or artifact.
    never infer a measured result from visual confidence or successful construction.
    In Realization, map actual `R#` regions to one or more `A#` anchors, artifact-native targets,
    and the applicable tests. Use `built` only when the artifact exists, direct visual inspection
-   completed, and every applicable test has a recorded result (including honest `not-run`).
+   is complete, and every applicable test has a recorded result (including honest `not-run`).
    `built` is a construction state, not overall acceptance. Use `failed` for failed checks or
    source drift and `unavailable` for missing build or rendering capability. Always disclose
    not-run tests and unresolved limitations. For a legacy combined plan return the same evidence

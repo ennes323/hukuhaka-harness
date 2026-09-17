@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-memory-audit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Audit Codex local memories for stale, duplicated, conflicting, or overly specific engineering context without editing generated memory files directly.",
   "author": {
     "name": "hukuhaka"
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "Hukuhaka Memory Audit",
     "shortDescription": "Review stale or oversized Codex memory safely.",
-    "longDescription": "Measure Codex memory pressure, audit retained engineering context against current repository and runtime evidence, and propose approval-gated cleanup without treating generated memory files as an editable source of truth.",
+    "longDescription": "Review retained context for durable value and current evidence, propose precise cleanup, and submit approved changes through the host's supported memory update mechanism. A separate hook suggests review when memory size crosses a threshold; generated memory files are never hand-edited.",
     "developerName": "hukuhaka",
     "category": "Developer Tools",
     "capabilities": [

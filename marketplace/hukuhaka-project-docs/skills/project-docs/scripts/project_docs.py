@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
+import select
 import subprocess
 import sys
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -18,6 +21,8 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_DOCUMENTS = 256
 MAX_READER_DOCUMENTS = 32
 MAX_READER_BYTES = 1024 * 1024
+MAX_SESSION_INPUT_BYTES = 1024 * 1024
+SESSION_TIMEOUT_SECONDS = 180
 ROLES = {"contract", "operations", "decision", "guide", "research", "history"}
 STATUSES = {"current", "draft", "historical"}
 AUTHORITIES = {"normative", "advisory", "evidence"}
@@ -55,7 +60,7 @@ def _pairs(items: Sequence[Tuple[str, Any]]) -> Dict[str, Any]:
 
 
 def _json(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), flush=True)
 
 
 def _error(code: str, path: str, message: str) -> Dict[str, str]:
@@ -541,16 +546,157 @@ def reader_read(
     }
 
 
+def _session_failure(manifest_name: str, manifest_bytes: int, code: str, message: str) -> Dict[str, Any]:
+    return {
+        "schemaVersion": SCHEMA_VERSION, "command": "reader-read", "status": "unavailable",
+        "manifest": manifest_name, "manifestBytes": manifest_bytes,
+        "documentBytes": 0, "documents": [],
+        "errors": [_error(code, "ids", message)],
+    }
+
+
+def _session_line(fd: int, timeout: float) -> bytes:
+    """Read one bounded newline frame with a deadline, including on a partial pipe/PTY line."""
+    deadline = time.monotonic() + timeout
+    raw = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+            raise TimeoutError("selection was not completed before the session deadline")
+        chunk = os.read(fd, min(4096, MAX_SESSION_INPUT_BYTES + 1 - len(raw)))
+        if not chunk:
+            raise EOFError("selection ended before a newline-terminated JSON object")
+        raw.extend(chunk)
+        if len(raw) > MAX_SESSION_INPUT_BYTES:
+            raise ValueError("selection exceeds {} bytes".format(MAX_SESSION_INPUT_BYTES))
+        if b"\n" in raw:
+            line, rest = raw.split(b"\n", 1)
+            if rest.strip():
+                raise ValueError("expected exactly one selection frame")
+            return bytes(line)
+
+
+def _session_ids(raw: bytes, catalog: Dict[str, Any]) -> List[str]:
+    try:
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_pairs,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError("invalid JSON constant {}".format(token))),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("selection must be strict UTF-8 JSON: {}".format(exc)) from exc
+    if not isinstance(value, dict) or set(value) != {"ids"} or not isinstance(value["ids"], list):
+        raise ValueError("selection must have exactly one ids array")
+    ids = value["ids"]
+    known = {document["id"] for document in catalog["documents"]}
+    if any(not isinstance(identifier, str) or ID_RE.fullmatch(identifier) is None or identifier not in known for identifier in ids):
+        raise ValueError("ids must be catalog kebab-case identifiers")
+    if len(ids) != len(set(ids)):
+        raise ValueError("ids must be unique")
+    return ids
+
+
+def reader_session(
+    root: Path, manifest_name: str, max_documents: int, max_bytes: int,
+    *, fd: int = 0, timeout: float = SESSION_TIMEOUT_SECONDS,
+) -> int:
+    """Emit a catalog, accept one selection, then emit a read and exit.
+
+    An empty ids array intentionally closes without reading documents. Its ordinary
+    complete reader-read envelope leaves the agent to report unknown/partial as needed.
+    """
+    catalog = reader_catalog(root, manifest_name)
+    if not 1 <= max_documents <= MAX_READER_DOCUMENTS:
+        _json(_session_failure(manifest_name, catalog["manifestBytes"], "selection.max-documents",
+                               "must be between 1 and {}".format(MAX_READER_DOCUMENTS)))
+        return 1
+    if not 1 <= max_bytes <= MAX_READER_BYTES:
+        _json(_session_failure(manifest_name, catalog["manifestBytes"], "selection.max-bytes",
+                               "must be between 1 and {}".format(MAX_READER_BYTES)))
+        return 1
+    # Disable terminal echo and canonical input so a PTY does not echo JSON onto
+    # stdout or truncate a valid selection at its platform line-buffer limit.
+    # Do this before publishing the catalog, which signals that input may start.
+    terminal = None
+    if catalog["status"] == "ready" and catalog["manifestBytes"] <= max_bytes and os.isatty(fd):
+        import termios
+        terminal = termios.tcgetattr(fd)
+        adjusted = termios.tcgetattr(fd)
+        adjusted[3] &= ~(termios.ECHO | termios.ICANON)
+        adjusted[6][termios.VMIN] = 1
+        adjusted[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSANOW, adjusted)
+    try:
+        _json(catalog)
+        if catalog["status"] != "ready" or catalog["manifestBytes"] > max_bytes:
+            return 1
+        try:
+            ids = _session_ids(_session_line(fd, timeout), catalog)
+        except TimeoutError as exc:
+            payload = _session_failure(manifest_name, catalog["manifestBytes"], "session.timeout", str(exc))
+        except EOFError as exc:
+            payload = _session_failure(manifest_name, catalog["manifestBytes"], "session.eof", str(exc))
+        except (ValueError, OSError) as exc:
+            payload = _session_failure(manifest_name, catalog["manifestBytes"], "session.invalid-selection", str(exc))
+        else:
+            if ids:
+                payload = reader_read(root, manifest_name, ids, max_documents, max_bytes)
+            else:
+                payload = {
+                    "schemaVersion": SCHEMA_VERSION, "command": "reader-read", "status": "complete",
+                    "manifest": manifest_name, "manifestBytes": catalog["manifestBytes"],
+                    "documentBytes": 0, "documents": [], "errors": [],
+                }
+    finally:
+        if terminal is not None:
+            termios.tcsetattr(fd, termios.TCSANOW, terminal)
+    _json(payload)
+    return 0 if payload["status"] == "complete" else 1
+
+
+def reader_protocol_module() -> Any:
+    """Load the same validator from the Skill or standalone managed resources."""
+    directory = Path(__file__).resolve().parent
+    filename = ("project-doc-reader-protocol.py"
+                if Path(__file__).name == "project-doc-reader-tool.py"
+                else "reader_protocol.py")
+    spec = importlib.util.spec_from_file_location("project_doc_reader_protocol", directory / filename)
+    if spec is None or spec.loader is None:
+        raise OperationalError("Reader protocol validator is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_wire(command: str, raw: str) -> Dict[str, Any]:
+    protocol = reader_protocol_module()
+    try:
+        value = protocol.parse_json(raw)
+    except ValueError as exc:
+        errors = [_error("json.invalid", "$", str(exc))]
+    else:
+        if command == "reader-validate-request":
+            errors = protocol.validate_request(value)
+        elif not isinstance(value, dict) or set(value) != {"request", "response"}:
+            errors = [_error("pair.invalid", "$", "expected exactly request and response fields")]
+        else:
+            errors = protocol.validate_response(value["response"], request=value["request"])
+    return {"schemaVersion": 2, "command": command,
+            "status": "invalid" if errors else "valid", "errors": errors}
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="project_docs.py")
     subparsers = result.add_subparsers(dest="command", required=True)
-    for name in ("inventory", "validate", "audit", "reader-catalog", "reader-read"):
+    for name in ("reader-validate-request", "reader-validate-response"):
+        subparsers.add_parser(name, help="validate JSON v2 from stdin without repository access")
+    for name in ("inventory", "validate", "audit", "reader-catalog", "reader-read", "reader-session"):
         command = subparsers.add_parser(name)
         command.add_argument("--root", required=True)
         if name != "inventory":
             command.add_argument("--manifest", default="project-docs.json")
-        if name == "reader-read":
-            command.add_argument("--ids", required=True)
+        if name in ("reader-read", "reader-session"):
+            if name == "reader-read":
+                command.add_argument("--ids", required=True)
             command.add_argument("--max-documents", required=True, type=int)
             command.add_argument("--max-bytes", required=True, type=int)
     return result
@@ -558,6 +704,15 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    if arguments.command in ("reader-validate-request", "reader-validate-response"):
+        try:
+            payload = validate_wire(arguments.command, sys.stdin.read())
+        except (OSError, ValueError, RuntimeError) as exc:
+            _json({"schemaVersion": 2, "command": arguments.command, "status": "error",
+                   "errors": [_error("protocol.unavailable", "$", str(exc))]})
+            return 2
+        _json(payload)
+        return 0 if payload["status"] == "valid" else 1
     try:
         root = _root(arguments.root)
         if arguments.command == "inventory":
@@ -572,6 +727,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif arguments.command == "reader-catalog":
             payload = reader_catalog(root, arguments.manifest)
             code = 0 if payload["status"] == "ready" else 1
+        elif arguments.command == "reader-session":
+            return reader_session(root, arguments.manifest, arguments.max_documents, arguments.max_bytes)
         else:
             payload = reader_read(
                 root,

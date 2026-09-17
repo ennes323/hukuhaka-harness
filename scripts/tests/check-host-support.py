@@ -134,8 +134,8 @@ def main() -> int:
     require("agents" not in codex, "Codex manifest must not claim unsupported packaged agents", errors)
     require(worklog_codex.get("name") == "hukuhaka-worklog",
             "worklog Codex manifest name differs from its catalog identity", errors)
-    require(worklog_codex.get("version") == "0.4.1",
-            "worklog plugin version must be 0.4.1", errors)
+    require(worklog_codex.get("version") == "0.5.0",
+            "worklog plugin version must be 0.5.0", errors)
     require("hooks" not in worklog_codex,
             "worklog must use Codex's default hooks/hooks.json discovery", errors)
 
@@ -159,8 +159,8 @@ def main() -> int:
             "memory audit must remain opt-in", errors)
     require(set(memory_component.get("hosts", {})) == {"codex"},
             "memory audit must be Codex-only", errors)
-    require(memory_audit_manifest.get("version") == "0.1.0",
-            "memory audit plugin version must be 0.1.0", errors)
+    require(memory_audit_manifest.get("version") == "0.2.0",
+            "memory audit plugin version must be 0.2.0", errors)
     require(memory_audit_manifest.get("skills") == "./skills/",
             "memory audit manifest must expose its Skill", errors)
     require("hooks" not in memory_audit_manifest,
@@ -211,19 +211,19 @@ def main() -> int:
             "Project Docs plugin must remain opt-in", errors)
     require(set(project_docs_component.get("hosts", {})) == {"codex"},
             "Project Docs plugin must be Codex-only", errors)
-    require(project_docs_manifest.get("version") == "0.1.3",
-            "Project Docs plugin version must be 0.1.3", errors)
+    require(project_docs_manifest.get("version") == "0.2.0",
+            "Project Docs plugin version must be 0.2.0", errors)
     require(project_docs_manifest.get("skills") == "./skills/",
             "Project Docs manifest must expose its Skill", errors)
     uiux_component = components.get("hukuhaka-uiux-foundation", {})
     require(uiux_component.get("kind") == "plugin",
             "UI/UX Foundation must be catalogued as a plugin", errors)
-    require(uiux_component.get("default") is True,
-            "UI/UX Foundation must be selected by recommended installs", errors)
+    require(uiux_component.get("default") is False,
+            "UI/UX Foundation must remain optional", errors)
     require(set(uiux_component.get("hosts", {})) == {"codex"},
             "UI/UX Foundation must be Codex-only", errors)
-    require(uiux_manifest.get("version") == "0.1.0",
-            "UI/UX Foundation plugin version must be 0.1.0", errors)
+    require(uiux_manifest.get("version") == "0.1.1",
+            "UI/UX Foundation plugin version must be 0.1.1", errors)
     require(uiux_manifest.get("skills") == "./skills/",
             "UI/UX Foundation manifest must expose its Skill", errors)
     require("hooks" not in uiux_manifest,
@@ -259,7 +259,7 @@ def main() -> int:
     if host_support:
         require("# Codex support contract" in host_support,
                 "host-support docs do not declare Codex as the active host", errors)
-        require("| <code>hukuhaka-uiux-foundation</code> | Native recommended plugin | Supported |" in host_support,
+        require("| <code>hukuhaka-uiux-foundation</code> | Native optional plugin | Supported |" in host_support,
                 "host-support matrix does not declare UI/UX Foundation", errors)
         require("lifecycle hooks and commands" in host_support and "trusted by" in host_support and "Codex" in host_support,
                 "host-support docs omit Codex hook trust behavior", errors)
@@ -272,10 +272,16 @@ def main() -> int:
             "project-doc-reader must be Codex-only", errors)
     require(reader_component.get("path") == "agents/project-doc-reader.toml",
             "project-doc-reader catalog source differs", errors)
-    require(reader_component.get("resources") == [{
-        "source": "marketplace/hukuhaka-project-docs/skills/project-docs/scripts/project_docs.py",
-        "target": "agents/project-doc-reader-tool.py",
-    }], "project-doc-reader helper resource differs", errors)
+    reader_resources = [
+        ("scripts/project_docs.py", "agents/project-doc-reader-tool.py"),
+        ("scripts/reader_protocol.py", "agents/project-doc-reader-protocol.py"),
+        ("references/reader-request-v2.schema.json", "agents/project-doc-reader/reader-request-v2.schema.json"),
+        ("references/reader-response-v2.schema.json", "agents/project-doc-reader/reader-response-v2.schema.json"),
+    ]
+    require(reader_component.get("resources") == [
+        {"source": "marketplace/hukuhaka-project-docs/skills/project-docs/" + source,
+         "target": target} for source, target in reader_resources
+    ], "project-doc-reader protocol resources differ", errors)
     expected_codex = {
         name for name, component in components.items()
         if component.get("kind") == "plugin"
@@ -333,6 +339,14 @@ def main() -> int:
             "build handoff still contains a retired Claude adapter", errors)
     require("write-capable worker" in build_handoff,
             "Codex build handoff does not define its worker adapter", errors)
+    require("model: gpt-5.6-terra" in build_handoff and "reasoning_effort: high" in build_handoff,
+            "designer handoff must explicitly select Terra high", errors)
+    require("fork_turns: none" in build_handoff and "references/worker-contract.md" in build_handoff,
+            "designer handoff must pass its specialist contract in a fresh context", errors)
+    worker_contract = (PLANNER / "skills/artifact-designer/references/worker-contract.md").read_text(encoding="utf-8")
+    require("Do not spawn agents" in worker_contract and "finalized spec" in worker_contract
+            and "directly inspect" in worker_contract and "SKILL.md" in worker_contract,
+            "designer specialist must preserve ownership, skill use, and visual verification", errors)
     require("do not build in the parent" in build_handoff.lower(),
             "build handoff permits same-context construction", errors)
 
@@ -349,25 +363,29 @@ def main() -> int:
         for key in ("allowed-tools:", "disable-model-invocation:", "argument-hint:"):
             require(key not in header,
                     f"worklog frontmatter contains unsupported key: {key[:-1]}", errors)
+        description_match = re.search(r"^description:\s*(.+)$", header, re.MULTILINE)
+        description = description_match.group(1) if description_match else ""
+        for boundary in (
+            "Maintain ongoing progress in .hukuhaka/work.md",
+            "record work outcomes in .hukuhaka/changelog.md",
+            "Use automatically throughout project work when these files exist",
+            "when explicitly asked to update Worklog",
+        ):
+            require(boundary in description,
+                    f"worklog description is missing its recording boundary: {boundary}", errors)
     require("${CLAUDE_PLUGIN_ROOT}" not in worklog_skill,
             "worklog skill contains a retired Claude plugin-root variable", errors)
     require("!`" not in worklog_skill,
             "worklog skill contains Claude-only shell interpolation", errors)
     require("references/writing-guide.md" not in worklog_skill,
             "worklog skill still depends on the removed writing guide", errors)
-    require("mechanical setup/status/archive commands" in worklog_skill,
-            "worklog lifecycle trigger still claims mechanical commands", errors)
-    require("Use automatically when a project has .hukuhaka/work.md" in worklog_skill,
-            "worklog automatic lifecycle trigger is missing", errors)
-    require("first non-trivial project task in a new session" in worklog_script,
-            "worklog session-orientation guidance is missing", errors)
+    require("throughout project work" in worklog_script,
+            "worklog continuous recording guidance is missing", errors)
     require(".hukuhaka/work.md" in worklog_skill,
             "worklog host-neutral current-work path is missing", errors)
     require(".hukuhaka/changelog.md" in worklog_skill,
             "worklog host-neutral history path is missing", errors)
-    require("Never read, migrate, or write a legacy `backlog.md`" in worklog_skill,
-            "worklog legacy backlog exclusion is missing", errors)
-    require("write the changelog first" in worklog_skill,
+    require("Record the outcome in changelog.md.\n    Then remove the finished item from work.md." in worklog_skill,
             "worklog completion ordering is missing", errors)
     worklog_plugin_name = worklog_codex.get("name")
     if isinstance(worklog_plugin_name, str) and worklog_skill_name:
@@ -392,8 +410,16 @@ def main() -> int:
         require(contract in worklog_script,
                 f"worklog mechanical contract is missing: {contract}", errors)
     hook_groups = worklog_hooks.get("hooks", {})
-    require(set(hook_groups) == {"UserPromptSubmit"},
-            "worklog must register only a UserPromptSubmit hook", errors)
+    require(set(hook_groups) == {"UserPromptSubmit", "PreToolUse", "PostToolUse"},
+            "worklog must register commands and paired archive hooks", errors)
+    for event in ("PreToolUse", "PostToolUse"):
+        entries = hook_groups.get(event, [])
+        require(len(entries) == 1 and entries[0].get("hooks") == [{
+            "type": "command",
+            "command": 'python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" hook',
+            "timeout": 5,
+        }] and "matcher" not in entries[0],
+                f"worklog {event} must use the synchronous paired adapter for all tools", errors)
     hook_entries = hook_groups.get("UserPromptSubmit", [])
     require(len(hook_entries) == 1,
             "worklog must register exactly one UserPromptSubmit group", errors)
@@ -425,13 +451,13 @@ def main() -> int:
             errors,
         )
     for contract in (
-        "KEEP",
-        "CONDENSE",
-        "SUPERSEDE",
-        "DELETE",
-        "`UNRESOLVED` is a report status, not a memory classification",
-        "do not edit `memory_summary.md`",
-        "No memory changes have been applied.",
+        "Check drift-prone\nclaims against the user's latest direction and current authoritative sources",
+        "provide the exact replacement or removal",
+        "IF the proposed changes are not yet approved:\n    Present the concrete change set for approval without applying it.",
+        "Use the memory update mechanism permitted by the current host instructions.",
+        "If the mechanism records a request or note, report that status rather than\n    claiming the generated memories have already been updated.",
+        "Never manually edit generated summaries, indexes, rollout summaries, or evidence.",
+        "Do not alter repositories, Git state, services, or external systems merely to\nmake a memory claim true.",
     ):
         require(contract in memory_audit_skill,
                 f"memory audit Skill contract is missing: {contract}", errors)
@@ -471,28 +497,29 @@ def main() -> int:
                 f"memory audit hook contract is missing: {contract}", errors)
 
     agents_template_rules = (
-        "Trace its impact through related components, shared contracts, and consumers",
-        "Follow the user's latest scope",
-        "Keep the goal, scope, progress, and verification status current",
-        "Preserve existing user work",
-        "Commit the task changes and complete the required verification",
-        "merge into the target branch with `--ff-only`",
+        "Apply only to authorized changes in an existing Git repository",
+        "Analysis-only tasks remain read-only",
+        "Preserve pre-existing staged, unstaged, and untracked work",
+        "Discarding, overwriting, or committing pre-existing user changes requires explicit permission",
+        "Stage only this task's changes explicitly and commit them, including fixes",
+        "Merge into target with --ff-only",
+        "On success, remove this task's clean worktree and branch, if created",
+        "If a separate integration approval is required and still missing",
+        "Run required checks, fixing task-related failures and rerunning affected checks",
+        "If required checks still fail or remain unavailable",
+        "On divergence, preserve the work and ask for direction",
+        "Deleting pre-existing branches or worktrees, pushing, tagging, publishing, and deploying require explicit authorization",
     )
     normalized_agents = " ".join(agents_template.split())
+    require([line for line in agents_template.splitlines() if line.startswith("# ")]
+            == ["# Ground Decisions", "# Code Quality", "# Scope and Execution", "# Change Preview",
+                "# Verification", "# Subagents", "# Git Workflow"],
+            "AGENTS.md template must contain the shared working principles and Git workflow", errors)
     for rule in agents_template_rules:
         require(rule in normalized_agents,
                 f"AGENTS.md template lacks required guidance: {rule}", errors)
     require("engineering-plan" not in agents_template,
             "AGENTS.md template names the optional Skill", errors)
-
-    agents_challenge_rules = (
-        "When challenged, reassess your judgment and correct mistakes where warranted",
-        "Avoid automatic agreement or forced disagreement",
-        "respect the user's preferences and scope choices",
-    )
-    for rule in agents_challenge_rules:
-        require(rule in normalized_agents,
-                f"AGENTS.md template lacks user-challenge guidance: {rule}", errors)
 
     for contract in (
         'model = "gpt-5.6-sol"',
@@ -509,29 +536,25 @@ def main() -> int:
         'sandbox_mode = "read-only"',
         "manifestBytes",
         "Never execute commands",
-        "path:line",
-        "exactly two exec calls",
         "reader-catalog",
         "reader-read",
         "Never inherit workdir",
-        "exactly one repository-relative path",
     ):
         require(contract in project_doc_reader,
                 f"project-doc-reader contract is missing: {contract}", errors)
-    for contract in (
-        "bootstrap",
-        "audit",
-        "validate",
-        "sync",
-        "Reader handoff",
-        "maxDocuments: 32",
-        "one context pass and one later impact pass",
-        "do not fabricate a capsule",
-        "read every selected document directly",
-        "PROJECT_DOCS_EXPANSION:",
-    ):
-        require(contract in project_docs_skill,
-                f"Project Docs Skill contract is missing: {contract}", errors)
+    # Package reachability, not a proxy for native routing or semantic quality.
+    project_docs_references = PROJECT_DOCS_SKILL.parent / "references"
+    for name in ("context", "impact", "maintenance"):
+        reference = project_docs_references / f"{name}.md"
+        require(reference.is_file() and bool(reference.read_text(encoding="utf-8").strip()),
+                f"Project Docs workflow reference is missing or empty: {name}", errors)
+        require(f"references/{name}.md" in project_docs_skill,
+                f"Project Docs entrypoint does not link its {name} workflow", errors)
+    for name in ("reader.md", "project-docs.schema.json", "reader-request.schema.json",
+                 "reader-response.schema.json", "reader-protocol.md",
+                 "reader-request-v2.schema.json", "reader-response-v2.schema.json"):
+        require((project_docs_references / name).is_file(),
+                f"Project Docs compatibility resource is missing: {name}", errors)
 
     require(not (ROOT / "skills" / "hukuhaka-team" / "SKILL.md").exists(), "removed hukuhaka-team skill still exists", errors)
     team_refs = list((ROOT / "eval").rglob("TEAM-*.json"))

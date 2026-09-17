@@ -4,16 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
 import re
 import sys
 import tempfile
-from contextlib import redirect_stdout
-from dataclasses import dataclass
+import time
+from contextlib import contextmanager, redirect_stdout
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Mapping, TextIO
+from typing import Iterable, Iterator, Mapping, TextIO
 
 
 WORKLOG_DIR = ".hukuhaka"
@@ -43,7 +45,7 @@ CODEX_BOUND_COMMAND = re.compile(
 
 WORK_TEMPLATE = """# Work
 
-> Current work only. Completed and closed outcomes belong in `changelog.md`.
+> Current working context. Retained outcomes and checkpoints belong in `changelog.md`.
 
 ## In Progress
 
@@ -54,7 +56,7 @@ WORK_TEMPLATE = """# Work
 
 CHANGELOG_TEMPLATE = f"""# Changelog
 
-> Recent completed and closed work. Newest first; keep at most {RECENT_LIMIT} entries.
+> Outcomes and checkpoints. Newest first; keep at most {RECENT_LIMIT} entries.
 > Older entries live in `changelog/YYYY-MM.md`.
 
 ## Recent
@@ -119,13 +121,13 @@ def managed_block() -> str:
             "## Worklog",
             "",
             "- `.hukuhaka/work.md` contains current Planned, In Progress, and On Hold work.",
-            "- On the first non-trivial project task in a new session, read it before changing project files when both Worklog files exist.",
-            "- Read `.hukuhaka/changelog.md` only when resuming, completing, closing, or checking prior decisions.",
-            f"- Use the installed `{CODEX_INVOCATION}` Skill automatically when non-trivial project work starts, resumes, pauses, completes, or closes.",
-            "- Analysis, implementation planning, routine one-off edits, and mechanical Worklog commands do not change lifecycle state.",
+            f"- Use the installed `{CODEX_INVOCATION}` Skill throughout project work to keep progress and useful working context current.",
+            "- Read current progress before starting or continuing work; consult relevant history when past outcomes or decisions matter.",
+            "- Write new or updated records in English, preserving unrelated existing records.",
             "- If the files are missing during automatic use, continue the task without creating them; explicit Worklog requests require setup.",
             "- Only the primary agent changes Worklog state; delegated agents may read it but must not modify it.",
-            "- Completed and closed work belongs in `.hukuhaka/changelog.md`.",
+            "- `.hukuhaka/changelog.md` retains outcomes, decisions, and intermediate checkpoints; unfinished work remains in `work.md`.",
+            "- Trusted plugin hooks archive excess history automatically after tool calls change the changelog.",
             END_MARKER,
         )
     )
@@ -261,12 +263,10 @@ def render_history(prefix: str, entries: Iterable[HistoryEntry]) -> str:
     return prefix.rstrip() + ("\n\n" + "\n\n".join(bodies) if bodies else "") + "\n"
 
 
-def load_archive(path: Path, month: str) -> list[HistoryEntry]:
-    if not path.exists():
+def load_archive(path: Path, month: str, text: str | None) -> list[HistoryEntry]:
+    if text is None:
         return []
-    refuse_symlink(path)
     expected = f"# Changelog — {month}"
-    text = path.read_text(encoding="utf-8")
     if not text.startswith(expected):
         raise WorklogError(f"{path} must start with {expected}")
     synthetic = "# Changelog\n\n## Recent\n" + text[len(expected):].lstrip("\n")
@@ -281,15 +281,142 @@ def render_archive(month: str, entries: Iterable[HistoryEntry]) -> str:
     return f"# Changelog — {month}\n" + ("\n" + "\n\n".join(bodies) if bodies else "") + "\n"
 
 
+@contextmanager
+def archive_lock(root: Path) -> Iterator[None]:
+    """Serialize automatic and manual archive calls without repository lock files."""
+    directory = Path(tempfile.gettempdir()) / "hukuhaka-worklog-locks"
+    refuse_symlink(directory)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
+    path = directory / f"{key}.lock"
+    refuse_symlink(path)
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if not handle.tell():
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def rebase_links(text: str) -> str:
+    """Move Markdown destinations one directory deeper without changing code."""
+    def destination(value: str) -> str:
+        # URLs, absolute paths, and local fragments do not depend on the directory.
+        if not value or value.startswith(("/", "#", "\\")) or re.match(r"^[a-zA-Z][\w+.-]*:", value):
+            return value
+        return "../" + value
+
+    result: list[str] = []
+    fence: tuple[str, int] | None = None
+    inline_ticks = 0
+    list_indents: list[int] = []
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence:
+            result.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= fence[1] and not marker[2].strip():
+                fence = None
+            continue
+        if marker and not inline_ticks:
+            fence = (marker[1][0], len(marker[1]))
+            result.append(line)
+            continue
+        if line.strip() and not inline_ticks:
+            expanded = line.expandtabs(4)
+            indent = len(expanded) - len(expanded.lstrip(" "))
+            while list_indents and indent < list_indents[-1]:
+                list_indents.pop()
+            content_indent = list_indents[-1] if list_indents else 0
+            if indent >= content_indent + 4:
+                result.append(line)
+                continue
+            bullet = re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", expanded)
+            if bullet:
+                list_indents.append(bullet.end())
+        definition = re.match(r"^( {0,3}\[[^\]\n]+\]:\s*)(<[^>\n]*>|\S+)(.*)$", line)
+        if definition and not inline_ticks:
+            target = definition[2]
+            target = "<" + destination(target[1:-1]) + ">" if target.startswith("<") else destination(target)
+            result.append(definition[1] + target + definition[3] + ("\n" if line.endswith("\n") else ""))
+            continue
+        i = 0
+        while i < len(line):
+            if line[i] == "\\" and not inline_ticks:
+                result.append(line[i:i + 2])
+                i += 2
+                continue
+            if line[i] == "`":
+                end = i + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                count = end - i
+                if not inline_ticks:
+                    inline_ticks = count
+                elif inline_ticks == count:
+                    inline_ticks = 0
+                result.append(line[i:end])
+                i = end
+                continue
+            if not inline_ticks and line.startswith("](", i):
+                start = i + 2
+                while start < len(line) and line[start] in " \t":
+                    start += 1
+                angle = start < len(line) and line[start] == "<"
+                start += int(angle)
+                end, depth = start, 0
+                while end < len(line):
+                    ch = line[end]
+                    if ch == "\\":
+                        end += 2
+                        continue
+                    if angle and ch == ">":
+                        break
+                    if not angle:
+                        if ch.isspace() or (ch == ")" and depth == 0):
+                            break
+                        depth += (ch == "(") - (ch == ")")
+                    end += 1
+                result.append(line[i:start] + destination(line[start:end]))
+                i = end
+                continue
+            result.append(line[i])
+            i += 1
+    return "".join(result)
+
+
 def archive_history(root: Path, keep: int = RECENT_LIMIT) -> int:
+    with archive_lock(root):
+        return archive_history_locked(root, keep)
+
+
+def archive_history_locked(root: Path, keep: int) -> int:
     if keep < 0:
         raise WorklogError("--keep must be zero or greater")
     _, changelog, archive_dir = worklog_paths(root)
+    refuse_symlink(root / WORKLOG_DIR)
     if not changelog.is_file():
         raise WorklogError(f"missing {changelog}; run worklog setup first")
     refuse_symlink(changelog)
     refuse_symlink(archive_dir)
-    prefix, entries = parse_history(changelog.read_text(encoding="utf-8"), changelog)
+    original = changelog.read_text(encoding="utf-8")
+    prefix, entries = parse_history(original, changelog)
     moving = entries[keep:]
     if not moving:
         print(f"worklog archive: Recent has {len(entries)} item(s); keep limit {keep}; nothing to move")
@@ -300,25 +427,35 @@ def archive_history(root: Path, keep: int = RECENT_LIMIT) -> int:
         grouped.setdefault(entry.month, []).append(entry)
 
     writes: list[tuple[Path, str]] = []
+    originals: dict[Path, str | None] = {changelog: original}
     for month, month_entries in sorted(grouped.items(), reverse=True):
         path = archive_dir / f"{month}.md"
-        existing = load_archive(path, month)
+        refuse_symlink(path)
+        originals[path] = path.read_text(encoding="utf-8") if path.exists() else None
+        existing = load_archive(path, month, originals[path])
         by_identity = {entry.identity: entry for entry in existing}
         additions: list[HistoryEntry] = []
         for entry in month_entries:
+            relocated = replace(entry, text=rebase_links(entry.text))
             prior = by_identity.get(entry.identity)
-            if prior is not None and prior.text != entry.text:
+            if prior is not None and prior.text != relocated.text:
                 raise WorklogError(
                     f"conflicting archive entry: {entry.date} — {entry.title} in {path}"
                 )
             if prior is None:
-                additions.append(entry)
+                additions.append(relocated)
         writes.append((path, render_archive(month, additions + existing)))
 
     # Archive destinations are written first. An interruption can duplicate a
     # Recent entry, but a rerun recognizes the exact archived copy and finishes.
     for path, content in writes:
+        refuse_symlink(path)
+        if (path.read_text(encoding="utf-8") if path.exists() else None) != originals[path]:
+            raise WorklogError(f"archive changed during preparation: {path}")
         atomic_write(path, content)
+    refuse_symlink(changelog)
+    if changelog.read_text(encoding="utf-8") != original:
+        raise WorklogError("changelog changed during archiving; retry without discarding the newer records")
     atomic_write(changelog, render_history(prefix, entries[:keep]))
 
     print(
@@ -373,6 +510,70 @@ def hook_command(prompt: str) -> str | None:
     return match.group("command") if match else None
 
 
+def project_root(cwd: Path) -> Path | None:
+    """Find the nearest Worklog, without crossing a nested repository boundary."""
+    for root in (cwd, *cwd.parents):
+        if (root / WORKLOG_DIR).exists():
+            refuse_symlink(root / WORKLOG_DIR)
+            return root
+        if (root / ".git").exists():
+            break
+    return None
+
+
+def changelog_digest(root: Path) -> str | None:
+    path = root / WORKLOG_DIR / CHANGELOG_FILE
+    refuse_symlink(path)
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def run_archive_hook(payload: dict, environment: Mapping[str, str]) -> None:
+    """Pair tool events by identity; never interpret shell code or tool output."""
+    data = environment.get("PLUGIN_DATA")
+    fields = [payload.get(key) for key in ("cwd", "session_id", "tool_use_id")]
+    if not data or not all(isinstance(value, str) and value for value in fields):
+        return
+    cwd, session, call = fields
+    pending = Path(data) / "worklog-pending"
+    refuse_symlink(pending)
+    key = hashlib.sha256(json.dumps([cwd, session, call]).encode()).hexdigest()
+    snapshot = pending / f"{key}.json"
+    refuse_symlink(snapshot)
+    if payload.get("permission_mode") == "plan":
+        snapshot.unlink(missing_ok=True)
+        return
+
+    if payload["hook_event_name"] == "PreToolUse":
+        root = project_root(Path(cwd).resolve())
+        if root is None:
+            return
+        pending.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Successful pairs remove their snapshot; interrupted calls expire in a day.
+        for stale in pending.glob("*.json"):
+            try:
+                if not stale.is_symlink() and stale.stat().st_mtime < time.time() - 86400:
+                    stale.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass  # Another tool pair consumed its own snapshot.
+        atomic_write(snapshot, json.dumps({"root": str(root), "digest": changelog_digest(root)}))
+        return
+
+    if not snapshot.is_file():
+        return
+    before = json.loads(snapshot.read_text(encoding="utf-8"))
+    snapshot.unlink()
+    root = project_root(Path(cwd).resolve())
+    if root is None or not isinstance(before, dict) or before.get("root") != str(root):
+        return
+    work, changelog, _ = worklog_paths(root)
+    refuse_symlink(work)
+    if not work.is_file() or not changelog.is_file():
+        return
+    if changelog_digest(root) != before.get("digest"):
+        with redirect_stdout(io.StringIO()):
+            archive_history(root)
+
+
 def run_hook(
     source: TextIO,
     destination: TextIO,
@@ -386,6 +587,14 @@ def run_hook(
         return 0
 
     codex = "PLUGIN_DATA" in environment
+    if codex and payload.get("hook_event_name") in {"PreToolUse", "PostToolUse"}:
+        try:
+            run_archive_hook(payload, environment)
+        except (OSError, UnicodeError, ValueError, WorklogError) as exc:
+            destination.write(json.dumps({"systemMessage": f"Worklog automatic archive: {exc}"}))
+        return 0
+    if payload.get("hook_event_name", "UserPromptSubmit") != "UserPromptSubmit":
+        return 0
     prompt = payload.get("prompt")
     command = hook_command(prompt) if codex and isinstance(prompt, str) else None
     if command is None:

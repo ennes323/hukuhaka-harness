@@ -8,7 +8,7 @@
       "name": "hukuhaka-report-planner",
       "kind": "plugin",
       "lifecycle": "supported",
-      "default": true,
+      "default": false,
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-report-planner/.codex-plugin/plugin.json"
@@ -19,7 +19,7 @@
       "name": "hukuhaka-engineering-plan",
       "kind": "plugin",
       "lifecycle": "supported",
-      "default": true,
+      "default": false,
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-engineering-plan/.codex-plugin/plugin.json"
@@ -63,7 +63,7 @@
       "name": "hukuhaka-uiux-foundation",
       "kind": "plugin",
       "lifecycle": "supported",
-      "default": true,
+      "default": false,
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-uiux-foundation/.codex-plugin/plugin.json"
@@ -125,6 +125,18 @@
         {
           "source": "marketplace/hukuhaka-project-docs/skills/project-docs/scripts/project_docs.py",
           "target": "agents/project-doc-reader-tool.py"
+        },
+        {
+          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/scripts/reader_protocol.py",
+          "target": "agents/project-doc-reader-protocol.py"
+        },
+        {
+          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/references/reader-request-v2.schema.json",
+          "target": "agents/project-doc-reader/reader-request-v2.schema.json"
+        },
+        {
+          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/references/reader-response-v2.schema.json",
+          "target": "agents/project-doc-reader/reader-response-v2.schema.json"
         }
       ],
       "hosts": {

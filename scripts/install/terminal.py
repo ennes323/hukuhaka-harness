@@ -88,8 +88,6 @@ def _rows(states: Sequence[_HostState]) -> List[Tuple[str, int, int]]:
         if state.host == "codex":
             rows.append(("settings-section", host_index, -1))
             rows.append(("configure", host_index, -1))
-            rows.append(("context", host_index, -1))
-            rows.append(("agent-policy", host_index, -1))
         rows.append(("reset-section", host_index, -1))
         rows.append(("reset", host_index, -1))
         rows.append(("template", host_index, -1))
@@ -163,7 +161,7 @@ def _render(
             output.write("{}    Select recommended components\n".format(marker))
         elif kind == "configure":
             output.write(
-                "{}    [{}] Configure global Codex defaults\n".format(
+                "{}    [{}] Review Codex settings or apply a profile\n".format(
                     marker, "x" if state.configure_codex else " "
                 )
             )

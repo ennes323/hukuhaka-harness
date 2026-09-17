@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +53,8 @@ class WorklogScriptTests(unittest.TestCase):
 
         agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("`$hukuhaka-worklog:worklog`", agents)
-        self.assertIn("first non-trivial project task in a new session", agents)
+        self.assertIn("throughout project work", agents)
+        self.assertIn("intermediate checkpoints", agents)
         self.assertIn("Only the primary agent changes Worklog state", agents)
         self.assertFalse((self.root / "CLAUDE.md").exists())
 
@@ -403,13 +405,180 @@ class WorklogScriptTests(unittest.TestCase):
         self.assertEqual([], list(outside.iterdir()))
 
 
+class AutomaticArchiveTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="hukuhaka automatic worklog ")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def write_history(self, count: int = 26) -> Path:
+        WORKLOG.setup(self.root)
+        path = self.root / ".hukuhaka/changelog.md"
+        path.write_text(WORKLOG.CHANGELOG_TEMPLATE + "\n" + "\n\n".join(
+            history_entry(day, f"Entry {day}") for day in range(31, 31 - count, -1)
+        ) + "\n")
+        return path
+
+    def event(self, event: str, call: str = "call-1", **overrides) -> str:
+        payload = {
+            "hook_event_name": event, "cwd": str(self.root),
+            "session_id": "session-1", "tool_use_id": call,
+            "tool_name": "apply_patch", "permission_mode": "default",
+        }
+        payload.update(overrides)
+        output = io.StringIO()
+        WORKLOG.run_hook(io.StringIO(json.dumps(payload)), output,
+                         {"PLUGIN_DATA": str(self.root / "plugin-data")})
+        return output.getvalue()
+
+    def test_read_only_and_unpaired_events_preserve_overflow(self) -> None:
+        path = self.write_history()
+        before = path.read_bytes()
+        self.assertEqual("", self.event("PostToolUse"))
+        self.assertEqual("", self.event("PreToolUse"))
+        self.assertEqual("", self.event("PostToolUse"))
+        self.assertEqual(before, path.read_bytes())
+        self.assertEqual([], list((self.root / ".hukuhaka/changelog").iterdir()))
+
+    def test_edit_archives_once_without_touching_progress(self) -> None:
+        path = self.write_history()
+        work = self.root / ".hukuhaka/work.md"
+        work_before = work.read_bytes()
+        self.event("PreToolUse")
+        path.write_text(path.read_text().replace("Recorded result.", "Checkpoint.", 1))
+        self.assertEqual("", self.event("PostToolUse"))
+        archive = self.root / ".hukuhaka/changelog/2026-07.md"
+        self.assertEqual(25, len(WORKLOG.parse_history(path.read_text(), path)[1]))
+        self.assertIn("Entry 6", archive.read_text())
+        before = (path.read_bytes(), archive.read_bytes())
+        self.event("PostToolUse")
+        self.assertEqual(before, (path.read_bytes(), archive.read_bytes()))
+        self.assertEqual(work_before, work.read_bytes())
+        self.assertEqual([], list((self.root / "plugin-data/worklog-pending").glob("*.json")))
+
+    def test_overlapping_tool_pairs_have_independent_snapshots(self) -> None:
+        path = self.write_history()
+        self.event("PreToolUse", "a")
+        self.event("PreToolUse", "b")
+        path.write_text(path.read_text() + "\nCheckpoint detail.\n")
+        self.event("PostToolUse", "b")
+        self.event("PostToolUse", "a")
+        archive = self.root / ".hukuhaka/changelog/2026-07.md"
+        self.assertEqual(1, archive.read_text().count("### "))
+        self.assertIn("Checkpoint detail.", archive.read_text())
+
+    def test_plan_mode_missing_files_and_unknown_events_do_not_write(self) -> None:
+        for event in ("PreToolUse", "PostToolUse", "Stop"):
+            self.assertEqual("", self.event(event))
+        self.assertFalse((self.root / ".hukuhaka").exists())
+        path = self.write_history()
+        before = path.read_bytes()
+        self.event("PreToolUse", permission_mode="plan")
+        path.write_text(path.read_text() + "\n")
+        self.event("PostToolUse", permission_mode="plan")
+        self.assertEqual(before + b"\n", path.read_bytes())
+        self.assertEqual([], list((self.root / ".hukuhaka/changelog").iterdir()))
+
+    def test_malformed_edit_warns_without_blocking_or_rewriting(self) -> None:
+        path = self.write_history()
+        self.event("PreToolUse")
+        path.write_text("user content without a Recent section\n")
+        response = json.loads(self.event("PostToolUse"))
+        self.assertIn("systemMessage", response)
+        self.assertNotIn("decision", response)
+        self.assertEqual("user content without a Recent section\n", path.read_text())
+
+    def test_subdirectory_lookup_stops_at_nested_repository(self) -> None:
+        self.write_history()
+        sub = self.root / "src"
+        sub.mkdir()
+        self.assertEqual(self.root, WORKLOG.project_root(sub))
+        (sub / ".git").mkdir()
+        self.assertIsNone(WORKLOG.project_root(sub))
+
+    def test_archive_preserves_link_targets_and_code(self) -> None:
+        path = self.write_history()
+        body = '''[report](../docs/report.md#result) ![plot](images/plot.png)
+[space](<../docs/a b.md>) [nested](../docs/a(b).md "Title")
+[web](https://example.com/a) [root](/absolute/file) [local](#section)
+[reference][report]
+[report]: ../docs/report.md "Title"
+- Task
+  - Substep
+    [nested note](../docs/report.md)
+      - Detail [evidence](../docs/report.md)
+
+Ordinary paragraph.
+
+    [indented code](../leave.md)
+
+`[example](../leave.md)`
+```markdown
+[example](../leave.md)
+```
+'''
+        path.write_text(path.read_text().replace("### 2026-07-06 — Entry 6\n\nRecorded result.",
+                                                "### 2026-07-06 — Entry 6\n\n" + body))
+        WORKLOG.archive_history(self.root)
+        text = (self.root / ".hukuhaka/changelog/2026-07.md").read_text()
+        self.assertIn("[report](../../docs/report.md#result)", text)
+        self.assertIn("![plot](../images/plot.png)", text)
+        self.assertIn("(<../../docs/a b.md>)", text)
+        self.assertIn('(../../docs/a(b).md "Title")', text)
+        self.assertIn('[report]: ../../docs/report.md "Title"', text)
+        self.assertIn('[nested note](../../docs/report.md)', text)
+        self.assertIn('[evidence](../../docs/report.md)', text)
+        self.assertIn('    [indented code](../leave.md)', text)
+        for unchanged in ('https://example.com/a', '(/absolute/file)', '(#section)',
+                          '`[example](../leave.md)`', '```markdown\n[example](../leave.md)\n```'):
+            self.assertIn(unchanged, text)
+
+    def test_interrupted_archive_retries_rebased_entry_without_duplicates(self) -> None:
+        path = self.write_history()
+        path.write_text(path.read_text() + "\n[report](../docs/report.md)\n")
+        original = WORKLOG.atomic_write
+
+        def interrupt(target, content):
+            if target == path:
+                raise OSError("interrupted before truncation")
+            original(target, content)
+
+        before = path.read_bytes()
+        with patch.object(WORKLOG, "atomic_write", interrupt), self.assertRaises(OSError):
+            WORKLOG.archive_history(self.root)
+        self.assertEqual(before, path.read_bytes())
+        WORKLOG.archive_history(self.root)
+        text = (self.root / ".hukuhaka/changelog/2026-07.md").read_text()
+        self.assertEqual(1, text.count("### "))
+        self.assertEqual(1, text.count("../../docs/report.md"))
+
+    def test_concurrent_edit_is_preserved_and_archive_is_serialized(self) -> None:
+        path = self.write_history()
+        with WORKLOG.archive_lock(self.root), self.assertRaises(OSError):
+            WORKLOG.archive_history(self.root)
+        original = WORKLOG.atomic_write
+
+        def append_during_archive(target, content):
+            original(target, content)
+            if target != path:
+                path.write_text(path.read_text().replace("## Recent", "## Recent\n\n" + history_entry(31, "New concurrent work")))
+
+        with patch.object(WORKLOG, "atomic_write", append_during_archive), self.assertRaises(WORKLOG.WorklogError):
+            WORKLOG.archive_history(self.root)
+        self.assertIn("New concurrent work", path.read_text())
+        self.assertEqual(27, len(WORKLOG.parse_history(path.read_text(), path)[1]))
+        WORKLOG.archive_history(self.root)
+        self.assertIn("New concurrent work", path.read_text())
+        self.assertEqual(25, len(WORKLOG.parse_history(path.read_text(), path)[1]))
+
+
 class WorklogPackageTests(unittest.TestCase):
     def test_codex_manifest_exposes_identity_and_version(self) -> None:
         codex = json.loads(
             (PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
         )
         self.assertEqual("hukuhaka-worklog", codex["name"])
-        self.assertEqual("0.4.1", codex["version"])
+        self.assertEqual("0.5.0", codex["version"])
         self.assertEqual("./skills/", codex["skills"])
         self.assertNotIn("hooks", codex)
         self.assertTrue((PLUGIN / "hooks" / "hooks.json").is_file())
@@ -425,11 +594,10 @@ class WorklogPackageTests(unittest.TestCase):
         self.assertNotIn("disable-model-invocation", header)
         self.assertNotIn("allowed-tools", header)
         self.assertIn(".hukuhaka/work.md", skill)
-        self.assertIn("Use automatically when a project has .hukuhaka/work.md", skill)
-        self.assertIn("Uncommitted, staged, or untracked status alone must not block", skill)
+        self.assertIn("Use automatically throughout project work when these files exist", header)
+        self.assertIn("when explicitly asked to update Worklog", header)
         self.assertNotIn("If either already has user changes", skill)
-        self.assertIn("Only the primary agent changes Worklog state", skill)
-        self.assertIn("Never read, migrate, or write a legacy `backlog.md`", skill)
+        self.assertIn("Only the primary agent updates these files", skill)
         self.assertNotIn("Claude Code", skill)
         self.assertNotIn("/hukuhaka-worklog:worklog", skill)
         self.assertNotIn("references/writing-guide.md", skill)

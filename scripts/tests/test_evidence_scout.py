@@ -105,12 +105,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
             first_manifest,
             (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_bytes(),
         )
-        values = current_values(
-            (self.codex_home / "config.toml").read_text(encoding="utf-8")
-        )
-        for key, expected in EVIDENCE_SCOUT_SETTINGS.items():
-            self.assertEqual(expected, values[key])
-        self.assertNotIn(("model_catalog_json",), values)
+        self.assertFalse((self.codex_home / "config.toml").exists())
         manifest = json.loads(
             (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
         )
@@ -141,10 +136,8 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         self.assertIn("max_threads = 9 # legacy alias\n", migrated)
         self.assertNotIn("max_concurrent_threads_per_session", migrated)
         self.assertIn('default_subagent_model = "user-model"\n', migrated)
-        self.assertEqual(
-            original.encode(),
-            self.deployment().config.backup.read_bytes(),
-        )
+        self.assertEqual(original, migrated)
+        self.assertFalse(self.deployment().config.backup.exists())
 
     def test_legacy_v2_install_migrates_to_native_luna_support(self) -> None:
         self.seed_legacy_v2()
@@ -298,6 +291,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
 
     def test_uninstall_removes_only_managed_agent_and_routing(self) -> None:
         self.codex_home.mkdir(parents=True, exist_ok=True)
+        (self.codex_home / "config.toml").write_text('model = "personal"\n')
         agents = self.codex_home / "AGENTS.md"
         agents.write_text("# User guidance\n", encoding="utf-8")
         agents.chmod(0o640)
@@ -394,7 +388,7 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
             "scripts.install.codex_config.CodexConfigEditor._doctor"
         ):
             self.seed_archived_scout()
-            configured = (self.codex_home / "config.toml").read_bytes()
+            self.assertFalse((self.codex_home / "config.toml").exists())
             installer.install(["astra_worker"], reset=True)
 
         self.assertTrue((self.codex_home / "agents" / "astra_worker.toml").is_file())
@@ -402,7 +396,7 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
         self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
         self.assertFalse((self.codex_home / "models_cache.json").exists())
         self.assertFalse((self.codex_home / "models-luna-v2.json").exists())
-        self.assertEqual(configured, (self.codex_home / "config.toml").read_bytes())
+        self.assertFalse((self.codex_home / "config.toml").exists())
 
     def test_active_scout_installs_and_reinstalls_from_catalog_source(self) -> None:
         installer = CodexInstaller(ROOT, self.catalog, "1.2.3", local_source=True)

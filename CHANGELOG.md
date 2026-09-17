@@ -6,6 +6,54 @@ All notable changes to hukuhaka-harness are documented here. The project follows
 Plugin versions (`marketplace/<plugin>/.codex-plugin/plugin.json`) are
 independent from the repository version.
 
+## [1.3.0] — 2026-09-17
+
+- Updated Worklog to 0.5.0, Project Docs to 0.2.0, Engineering Plan to 0.3.0,
+  Memory Audit to 0.2.0, Report Planner to 0.8.0, and UI/UX Foundation to 0.1.1.
+- Report Planner uses a concise finalized-spec handoff and explicit designer
+  responsibilities. UI/UX Foundation clarifies how to reconcile conflicting
+  design artifacts while preserving content and rendered verification.
+
+- Project Docs now supports direct document discovery and impact review without
+  an index or Reader. Conditional references guide context, impact, and optional
+  index maintenance; broader automatic-routing acceptance remains pending.
+- Project Doc Reader now uses a JSON v2 request/response contract and a single
+  bounded helper session. Update the caller and Reader together; v1 handoffs
+  are incompatible with the current Reader. Bounded execution evidence does
+  not establish general reliability or efficiency gains.
+- Simplified Engineering Plan and Memory Audit guidance around purpose,
+  evidence, and task-specific judgment. Memory Audit preserves approval before
+  changes, follows the host's permitted update mechanism, and prohibits direct
+  edits to generated memory files.
+
+- Worklog now keeps English working notes, nested steps, and intermediate
+  checkpoints. Trusted hooks automatically archive older history after changelog
+  edits, retaining the latest 25 entries and preserving relative Markdown links.
+
+- Clarified parent behavior after delegation: wait for completion, avoid progress
+  polling and unfinished-result review, and collect necessary follow-ups after
+  acceptance review. Urgent scope and safety decisions remain actionable.
+
+- Added shared Subagents guidance for bounded handoff, result acceptance and
+  targeted follow-ups. Clarified the optional Sol Worker's selection criteria
+  and responsibility for completing and verifying its assigned outcome.
+  Existing role identity, model settings and result format are retained.
+
+- Recommended settings now enable all three agent switches. Component installation
+  still preserves personal settings; saved configuration does not establish actual
+  child-model inheritance, permissions, or instruction-based delegation policy.
+
+- Added unified settings inspection, partial profiles, change receipts, scoped
+  restore and value-preserving organization. Component installation now preserves
+  independent settings; the recommended settings profile is an explicit choice.
+
+- Added first-pass analysis guidance to ground recommendations in underlying
+  evidence, challenge conclusions, and scale investigation to the decision.
+- Restored interactive and remote installation commands in a shorter README;
+  added a public installation guide for updates, removal, settings, and recovery.
+- Clarified installer command help, settings preservation, and delegated-workflow
+  limitations when subagents are unavailable.
+
 ## [1.2.0] — 2026-09-08
 
 ### Added

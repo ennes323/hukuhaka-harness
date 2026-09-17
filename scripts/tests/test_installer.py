@@ -138,10 +138,7 @@ class InstallerSelectionTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "hukuhaka-report-planner",
-                "hukuhaka-engineering-plan",
                 "hukuhaka-worklog",
-                "hukuhaka-uiux-foundation",
                 "agents-md",
             ],
             installer._automation_components("codex"),
@@ -217,25 +214,25 @@ class InstallerSelectionTests(unittest.TestCase):
                 },
                 {
                     "hukuhaka-engineering-plan": "0.0.9",
-                    "hukuhaka-worklog": "0.4.1",
+                    "hukuhaka-worklog": "0.5.0",
                 },
             )
         )
 
         self.assertEqual(
-            "not installed → 0.7.2",
+            "not installed → 0.8.0",
             summary["hukuhaka-report-planner"],
         )
         self.assertEqual(
-            "0.0.9 → 0.2.3",
+            "0.0.9 → 0.3.0",
             summary["hukuhaka-engineering-plan"],
         )
         self.assertEqual(
-            "0.4.1 (same version)",
+            "0.5.0 (same version)",
             summary["hukuhaka-worklog"],
         )
         self.assertEqual(
-            "unknown → 0.1.0",
+            "unknown → 0.1.1",
             summary["hukuhaka-uiux-foundation"],
         )
         self.assertNotIn("agents-md", summary)
@@ -1050,7 +1047,7 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "selected": {"planner"},
                 },
             ],
-            keys=("down", "down", "down", "down", "down", "down", "toggle", "down", "down", "enter"),
+            keys=("down", "down", "down", "down", "toggle", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
@@ -1085,29 +1082,18 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "selected": {"hukuhaka-report-planner"},
                 }
             ],
-            keys=(
-                "down",
-                "down",
-                "down",
-                "toggle",
-                "down",
-                "down",
-                "down",
-                "down",
-                "down",
-                "enter",
-            ),
+            keys=("down", "down", "down", "toggle", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
         self.assertTrue(plans[0].configure_codex)
         rendered = output.getvalue()
-        self.assertIn("Configure global Codex defaults", rendered)
+        self.assertIn("Review Codex settings or apply a profile", rendered)
         self.assertIn("Select recommended components", rendered)
         self.assertLess(rendered.index("Components"), rendered.index("Settings"))
         self.assertLess(rendered.index("Settings"), rendered.index("Reset"))
 
-    def test_codex_context_window_is_opt_in_and_shows_its_status(self) -> None:
+    def test_context_configuration_uses_unified_settings_entry(self) -> None:
         output = io.StringIO()
         plans = prompt_install_plan(
             io.StringIO(),
@@ -1129,28 +1115,18 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "context_status": "Codex/model defaults",
                 }
             ],
-            keys=(
-                "down",
-                "down",
-                "down",
-                "down",
-                "toggle",
-                "down",
-                "down",
-                "down",
-                "down",
-                "enter",
-            ),
+            keys=("down", "down", "down", "toggle", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
-        self.assertTrue(plans[0].change_context_window)
+        self.assertTrue(plans[0].configure_codex)
+        self.assertFalse(plans[0].change_context_window)
         self.assertIn(
-            "Configure context & auto-compaction (Codex/model defaults)",
+            "Review Codex settings or apply a profile",
             output.getvalue(),
         )
 
-    def test_codex_agent_policy_is_opt_in_and_shows_its_status(self) -> None:
+    def test_agent_configuration_uses_unified_settings_entry(self) -> None:
         output = io.StringIO()
         plans = prompt_install_plan(
             io.StringIO(),
@@ -1172,24 +1148,14 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "agent_policy_status": "Codex defaults",
                 }
             ],
-            keys=(
-                "down",
-                "down",
-                "down",
-                "down",
-                "down",
-                "toggle",
-                "down",
-                "down",
-                "down",
-                "enter",
-            ),
+            keys=("down", "down", "down", "toggle", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
-        self.assertTrue(plans[0].change_agent_policy)
+        self.assertTrue(plans[0].configure_codex)
+        self.assertFalse(plans[0].change_agent_policy)
         self.assertIn(
-            "Configure agent concurrency & nesting (Codex defaults)",
+            "Review Codex settings or apply a profile",
             output.getvalue(),
         )
 
@@ -1205,7 +1171,7 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "selected": {"planner"},
                 }
             ],
-            keys=("down", "toggle", "down", "down", "down", "down", "down", "down", "down", "enter"),
+            keys=("down", "toggle", "down", "down", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))

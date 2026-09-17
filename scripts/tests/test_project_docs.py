@@ -182,15 +182,29 @@ class ProjectDocsTests(unittest.TestCase):
         self.assertEqual(0, payload["documentBytes"])
         self.assertIn("selection.read-error", {item["code"] for item in payload["errors"]})
 
-    def test_all_three_contract_schemas_are_valid_json(self) -> None:
+    def test_contract_schemas_are_valid_json(self) -> None:
         references = SCRIPT.parent.parent / "references"
         schemas = sorted(references.glob("*.schema.json"))
-        self.assertEqual(3, len(schemas))
+        self.assertEqual({"project-docs.schema.json", "reader-request.schema.json",
+                          "reader-response.schema.json", "reader-request-v2.schema.json",
+                          "reader-response-v2.schema.json"}, {schema.name for schema in schemas})
         for schema in schemas:
             with self.subTest(schema=schema.name):
                 value = json.loads(schema.read_text(encoding="utf-8"))
                 self.assertEqual("object", value["type"])
                 self.assertFalse(value["additionalProperties"])
+
+    def test_wire_cli_rejects_raw_duplicate_keys_and_invalid_pair_envelopes(self) -> None:
+        for command, raw in (("reader-validate-request", '{"schemaVersion":2,"schemaVersion":2}'),
+                             ("reader-validate-response", '{"request":{}}')):
+            with self.subTest(command=command):
+                result = subprocess.run(("python3", str(SCRIPT), command), input=raw,
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(1, result.returncode, result.stderr)
+                value = json.loads(result.stdout)
+                self.assertEqual(2, value["schemaVersion"])
+                self.assertEqual("invalid", value["status"])
+                self.assertTrue(value["errors"])
 
     def test_missing_empty_duplicate_and_additional_fields_fail(self) -> None:
         missing = self.run_cli("validate", "--root", str(self.root))

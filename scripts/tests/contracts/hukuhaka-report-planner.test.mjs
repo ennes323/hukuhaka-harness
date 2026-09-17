@@ -44,7 +44,7 @@ test("planner runs four content stages and stops plan-only at spec", () => {
   assert.deepEqual(stages, ["1-frame.md", "2-structure.md", "3-direct.md", "4-lock.md"]);
   for (const stage of stages) assert.ok(skill.includes("stages/" + stage));
   assert.match(skill, /four stages all concern content planning/);
-  assert.match(skill, /Planning-only request: report the finalized spec path and stop/);
+  assert.match(skill, /IF planning-only:\s+Report the finalized spec path and stop\./);
   assert.match(skill, /Do not select design craft references/);
   assert.match(skill, /record it as a\s+user constraint/);
   assert.match(skill, /editorial brief, not finished report copy/);
@@ -178,7 +178,7 @@ test("handoff is one separate designer with no parent design or build", () => {
   assert.match(handoff, /Do not build in the parent/);
   assert.match(handoff, /## Codex handoff/);
   assert.doesNotMatch(handoff, /Claude Code/);
-  assert.match(handoff, /user-level agent/);
+  assert.match(handoff, /do not install a user-level(?: or project-level)? agent/);
   assert.match(handoff, /write-capable worker/);
   assert.match(handoff, /\.\.\/artifact-designer\/SKILL.md/);
   assert.match(handoff, /same-named\s+installed copy from another version/);
@@ -255,5 +255,5 @@ test("Codex manifest exposes the report-planner version", () => {
     fs.readFileSync(path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json"), "utf8")
   );
 
-  assert.equal(codex.version, "0.7.2");
+  assert.equal(codex.version, "0.8.0");
 });

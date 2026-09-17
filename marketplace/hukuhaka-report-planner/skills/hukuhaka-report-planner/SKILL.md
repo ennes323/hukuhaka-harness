@@ -75,15 +75,19 @@ These references and the stages do not select the designer's representation.
 Write the finalized content plan to:
 `.hukuhaka/reports/<short-name>/spec.md`
 
-- Planning-only request: report the finalized spec path and stop.
-- Artifact request: read `references/build-handoff.md` and delegate the spec,
-  source material, output target, and user constraints to one artifact-designer
-  in a separate context.
-- The designer creates and owns `design.md`, builds the artifact, and records
-  design and verification results.
-- Wait for the designer's result and review its content fidelity against the
-  spec. Do not build alongside the designer or reopen their visual choices
-  merely because another treatment is possible.
+```text
+IF planning-only:
+    Report the finalized spec path and stop.
+ELSE IF an artifact was requested:
+    Read references/build-handoff.md.
+    Delegate the spec, source material, output target, and user constraints
+        to one artifact-designer in a separate context.
+    Wait for the designer's result and review its content fidelity against the spec.
+```
+
+The designer creates and owns `design.md`, builds the artifact, and records
+design and verification results. Do not build alongside the designer or reopen
+their visual choices merely because another treatment is possible.
 
 ## Existing plans
 

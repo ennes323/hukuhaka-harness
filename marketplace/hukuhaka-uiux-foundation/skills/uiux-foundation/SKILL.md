@@ -37,7 +37,14 @@ Prefer existing tokens and components. Promote a repeated local choice into the 
 - The mockup owns screen-level visual intent and composition.
 - The application owns working behavior and must implement both without silent one-off divergence.
 
-When artifacts disagree, identify whether the difference is intentional, missing, stale, or accidental. Resolve or preview the owner-level change before propagating it. If an unresolved choice materially changes product behavior or broad visual direction, show the smallest comparable options and stop for approval under the project's change boundary.
+```text
+WHEN artifacts disagree:
+    Identify whether the difference is intentional, missing, stale, or accidental.
+    Resolve or preview the owner-level change before propagating it.
+    IF an unresolved choice materially changes product behavior or broad visual direction:
+        Show the smallest comparable options.
+        Stop for approval under the project's change boundary.
+```
 
 ## Finish with evidence
 

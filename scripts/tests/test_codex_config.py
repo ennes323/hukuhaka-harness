@@ -55,7 +55,8 @@ class CodexConfigTextTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(RECOMMENDED_SETTINGS, current_values(first))
-        self.assertEqual("false", current_values(first)[("features", "multi_agent")])
+        for key in (("features", "multi_agent"), ("agents", "enabled"), ("features", "multi_agent_v2", "enabled")):
+            self.assertEqual("true", current_values(first)[key])
         self.assertNotIn("\nmodel =", first)
         self.assertNotIn("max_concurrent_threads_per_session", first)
         self.assertNotIn("max_depth", first)
@@ -96,7 +97,8 @@ class CodexConfigTextTests(unittest.TestCase):
         updated = update_config(original, RECOMMENDED_SETTINGS)
 
         self.assertEqual(RECOMMENDED_SETTINGS, current_values(updated))
-        self.assertEqual(2, updated.count("enabled = true"))
+        self.assertEqual(3, updated.count("enabled = true"))
+        self.assertNotIn("enabled = false", updated)
         self.assertIn('[plugins."demo@marketplace"]\nenabled = true\n', updated)
 
     def test_dotted_managed_keys_remain_dotted(self) -> None:

@@ -133,6 +133,13 @@ def main() -> int:
         auth_target.chmod(0o600)
         environment = os.environ.copy()
         environment.update({"HOME": str(home), "CODEX_HOME": str(codex_home)})
+        config_path = codex_home / "config.toml"
+        smoke_policy = (
+            "[features]\nmulti_agent = false\n"
+            "[features.multi_agent_v2]\nenabled = false\n"
+            "[agents]\nenabled = false\n"
+        )
+        config_path.write_text(smoke_policy, encoding="utf-8")
 
         run(
             (
@@ -152,11 +159,11 @@ def main() -> int:
             environment=environment,
             timeout=120,
         )
-        config = (codex_home / "config.toml").read_text(encoding="utf-8")
+        config = config_path.read_text(encoding="utf-8")
         if "model_catalog_json" in config or (codex_home / "models-luna-v2.json").exists():
             raise LunaE2EFailure("isolated install still depends on a model catalog override")
-        if "multi_agent = false" not in config:
-            raise LunaE2EFailure("isolated install did not disable subagents")
+        if config != smoke_policy:
+            raise LunaE2EFailure("isolated install changed the smoke's execution policy")
 
         prompt = (
             "Execute this exact command directly, without subagents: "

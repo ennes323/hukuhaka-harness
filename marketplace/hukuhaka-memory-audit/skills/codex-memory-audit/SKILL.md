@@ -1,92 +1,63 @@
 ---
 name: codex-memory-audit
-description: Audit Codex local memories when the user asks to inspect, prune, consolidate, or correct stale engineering context, or when a memory-pressure warning recommends an audit. Verify drift-prone claims against current sources, propose an approval-gated cleanup, and never hand-edit generated memory files.
+description: Review Codex local memories for stale, duplicate, or overly specific context when the user requests an audit or a memory-pressure warning suggests one.
 ---
 
 # Codex Memory Audit
 
-Audit retained coding context so historical implementation details do not silently become current facts.
+Retain useful context without treating historical details as current facts.
+Propose precise, evidence-based cleanup while preserving durable preferences
+and lessons. Generated memory files are not an editable source of truth.
 
-## Boundaries
+## Review relevant context
 
-- Codex local memories normally live under `${CODEX_HOME:-~/.codex}/memories/` and are generated state. Inspect them, but do not edit `memory_summary.md`, `MEMORY.md`, rollout summaries, or evidence files directly.
-- Required team or repository rules belong in `AGENTS.md` or checked-in documentation, not only in memory.
-- Audit first. Apply nothing until the user approves the exact proposed changes.
-- Do not treat old branches, versions, paths, commands, runtime results, project status, or design decisions as current without checking the active source.
-- Do not claim full coverage unless the complete local memory inventory was accessible.
+Follow the current host's memory instructions to locate and inspect memories.
+Use available summaries and indexes to identify relevant records, then read only
+the supporting history needed to evaluate them. State the scope actually reviewed
+and any access limits; do not imply full coverage from a partial review.
 
-## Workflow
+Separate durable preferences and lessons from volatile implementation state.
+Split a record when its parts require different judgments. Check drift-prone
+claims against the user's latest direction and current authoritative sources,
+configuration, runtime evidence, or maintained project records.
 
-### 1. Establish scope and inventory
+Do not substitute historical evidence for current verification. When a claim
+cannot be verified within the authorized scope, explain the uncertainty rather
+than presenting it as current or treating it as disproven.
 
-Record the reference date, Codex home used, and whether coverage is full or partial. Inspect the smallest useful set:
+Measure size when the request concerns memory pressure. A size warning is a
+reason to review, not proof of poor quality or permission to modify memories.
 
-1. `memory_summary.md` for always-loaded context;
-2. `MEMORY.md` for the durable index and pointers;
-3. only the rollout summaries or evidence files needed to resolve a claim.
+## Propose useful changes
 
-Report the summary byte and physical-line counts, index byte count, and rollout-summary file count. Do not dump unrelated memory content merely to prove access.
+Retain supported context that will help future work. Condense valuable experience
+buried in episodic detail; replace contradicted claims only with a supported,
+durable lesson. Remove duplicate, obsolete, or misleading context and details
+with no useful future role. Do not replace one volatile snapshot with another.
 
-### 2. Split memories into atomic claims
+Prefer authoritative sources for current values that are cheap to rediscover.
+Required repository rules belong in AGENTS.md or maintained project documents.
+Exclude secrets and unnecessary personal data.
 
-Separate durable working preferences from volatile implementation state. For example, split “uses repository X on branch Y with tool version Z” into the repository relationship, branch, and tool-version claims before judging it.
+For each proposed change, identify the source record, explain the reasoning and
+evidence, and provide the exact replacement or removal. Keep the proposal within
+the requested scope; a complete rewrite of memories or a fixed action taxonomy is
+not required. Make unresolved claims and application status clear.
 
-Give extra scrutiny to:
+## Apply approved changes
 
-- current repository paths, branches, worktrees, remotes, tags, and dirty state;
-- current architecture, public/private boundaries, active milestones, TODOs, and completion claims;
-- versions, models, SDKs, dependencies, ports, commands, generated artifacts, and runtime health;
-- measurements, benchmark results, test counts, device state, deployment state, and external-service status;
-- duplicated instructions already owned by `AGENTS.md`, project docs, configuration, or code.
+IF the proposed changes are not yet approved:
+    Present the concrete change set for approval without applying it.
 
-### 3. Verify now when verification is available
+WHEN the user approves a clear change set:
+    Preserve exclusions and corrections; do not request the same approval again.
+    Recheck facts that may have changed and would alter the approved action.
+    Use the memory update mechanism permitted by the current host instructions.
+    If the mechanism records a request or note, report that status rather than
+    claiming the generated memories have already been updated.
+    If no supported mechanism is available, provide the approved change set
+    and explain the unavailable step.
 
-For each drift-prone claim, inspect the current authoritative source before classifying it. Prefer, in order:
-
-1. the user's latest explicit direction;
-2. current repository source, configuration, Git state, runtime artifacts, or external authority when authorized;
-3. current Worklog and maintained project documentation;
-4. memory indexes and historical rollout evidence.
-
-Do not ask the user for information that can be discovered safely. If verification is unavailable, too disruptive, or outside the authorized scope, report the claim as `UNRESOLVED`; do not preserve it as a current memory candidate.
-
-`UNRESOLVED` is a report status, not a memory classification. Do not create a `VERIFY` class or postpone cheap current verification into a future memory item.
-
-### 4. Classify each claim
-
-Use exactly these memory actions:
-
-- **KEEP** — durable, useful, low-drift context that remains supported and is not already owned by a stronger instruction source.
-- **CONDENSE** — useful experience or preference buried in excessive episodic detail. Replace the detail with the smallest evidence-supported durable statement.
-- **SUPERSEDE** — current authority disproves or replaces the stored claim. Remove the old claim and propose only the durable part of the verified replacement; do not automatically memorize another volatile snapshot.
-- **DELETE** — duplicated, obsolete, misleading, unnecessary, sensitive, or one-off information with no durable future value.
-
-Do not keep a claim merely because it was once true. Current values that are cheap to rediscover should usually remain in their authoritative source rather than memory.
-
-### 5. Present an exact proposal
-
-Lead with the main quality risk, then provide:
-
-1. coverage and measured pressure;
-2. KEEP;
-3. CONDENSE with exact replacement wording;
-4. SUPERSEDE with current evidence and exact replacement or removal;
-5. DELETE;
-6. UNRESOLVED claims and the missing authority;
-7. conflicts and duplicates;
-8. the proposed compact canonical memory.
-
-For every non-KEEP item, identify the source memory and the exact proposed action. End with: `No memory changes have been applied.`
-
-## Approval and application
-
-Interpret approval narrowly. A bare approval applies only when the immediately preceding proposal is singular and unambiguous. Corrections or exclusions override the proposal for those items.
-
-After approval:
-
-1. Recheck any current authority that may have changed during the audit.
-2. Translate the approved scope into explicit retain, replace, and remove operations.
-3. Use an active Codex memory-management surface if one is available and verify its result.
-4. If no supported write surface is available, return the exact approved change set and direct the user to `/memories`; do not hand-edit generated memory files or claim the cleanup was applied.
-
-Never write secrets or unnecessary personal data into the proposed canonical memory. Never modify repository files, Git state, runtime services, or external systems merely to make a memory claim true.
+Never manually edit generated summaries, indexes, rollout summaries, or evidence.
+Do not alter repositories, Git state, services, or external systems merely to
+make a memory claim true. Report only the application results actually observed.

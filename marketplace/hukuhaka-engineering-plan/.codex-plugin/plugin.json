@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-engineering-plan",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Resolve engineering contracts, dependencies, and uncertainty with repository-grounded plans, then resume authorized implementation.",
   "author": {
     "name": "hukuhaka"
@@ -17,13 +17,13 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Hukuhaka Engineering Plan",
-    "shortDescription": "Ground and stress-test implementation plans.",
-    "longDescription": "Resolve contracts and cross-component dependencies, specify exact changes, challenge invariants, and select reusable verification evidence. Planning-only requests end with a plan; implementation requests return to execution.",
+    "shortDescription": "Plan changes around existing responsibilities and contracts.",
+    "longDescription": "Ground engineering decisions in existing responsibilities and contracts, explain material changes and dependencies, and choose verification for the required behavior. Planning-only requests end with a plan; implementation requests return to execution.",
     "developerName": "hukuhaka",
     "category": "Developer Tools",
     "capabilities": [
       "Planning"
     ],
-    "defaultPrompt": "Use $engineering-plan to produce a repository-grounded, decision-complete implementation plan."
+    "defaultPrompt": "Use $engineering-plan to develop a repository-grounded plan for this change."
   }
 }

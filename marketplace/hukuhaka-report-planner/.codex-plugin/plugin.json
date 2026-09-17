@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-report-planner",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Plan evidence-based visual documents as content specifications, then delegate representation, design, construction, and visual verification to a dedicated artifact designer.",
   "author": {
     "name": "hukuhaka"

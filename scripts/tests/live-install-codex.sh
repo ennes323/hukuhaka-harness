@@ -191,7 +191,7 @@ else
         --components agents-md,astra_worker,result-runner,evidence-scout --yes 2>&1)
 fi
 printf '%s\n' "$optional_output"
-grep -Fq "multi-agent enabled" <<<"$optional_output"
+grep -Fq "Agent runtime:  existing settings preserved (V1/V2 state not inferred)" <<<"$optional_output"
 
 python3 - "$CODEX_HOME" "$SMOKE_ROOT/source-models-cache.json" "$EXPECTED_VERSION" <<'PY'
 import json
@@ -253,9 +253,8 @@ if any("<!-- hukuhaka-{}:".format(name) in routing_text
        for name in ("astra_worker", "evidence-scout", "result-runner", "project-doc-reader")):
     raise SystemExit("agent installation injected obsolete routing")
 config = config_path.read_text(encoding="utf-8")
-for expected_line in ("multi_agent = false",):
-    if expected_line not in config:
-        raise SystemExit("missing config setting: {}".format(expected_line))
+if "multi_agent" in config:
+    raise SystemExit("component install modified agent runtime settings")
 if "model_catalog_json" in config:
     raise SystemExit("obsolete model_catalog_json pointer was installed")
 if "max_threads = 4 # legacy alias" not in config:
@@ -265,9 +264,8 @@ if "max_concurrent_threads_per_session" in config or "max_depth" in config:
 if 'default_subagent_model = "user-model"' not in config:
     raise SystemExit("unmanaged agent default was not preserved")
 
-backup = (root / "config.toml.hukuhaka-backup").read_text(encoding="utf-8")
-if "max_threads = 4 # legacy alias" not in backup:
-    raise SystemExit("legacy pre-migration config was not backed up")
+if (root / "config.toml.hukuhaka-backup").exists():
+    raise SystemExit("component installation unexpectedly rewrote config")
 PY
 
 printf 'Codex Worker, Runner, and Scout live install verified for v%s\n' "$EXPECTED_VERSION"

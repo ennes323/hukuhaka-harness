@@ -200,9 +200,10 @@ def validate_install(source: Path, version: str, root: Path, *, plugins: bool) -
     if any("catalog" in key.lower() or key.startswith("routing") for key in manifest):
         raise E2EFailure("schema-v4 manifest still owns a model catalog or routing")
     config_text = config.read_text(encoding="utf-8")
-    for expected in ("multi_agent = false",):
-        if expected not in config_text:
-            raise E2EFailure("missing runtime setting: {}".format(expected))
+    if re.search(r"(?m)^\s*multi_agent\s*=", config_text):
+        raise E2EFailure("fresh component install wrote the V1 agent switch")
+    if re.search(r"(?m)^\s*\[(?:agents|features\.multi_agent_v2)\]\s*$", config_text):
+        raise E2EFailure("fresh component install wrote agent execution policy")
     if "model_catalog_json" in config_text:
         raise E2EFailure("fresh install selected a model catalog")
     if (home / "models-luna-v2.json").exists():
@@ -259,7 +260,7 @@ def seed_legacy_v2(
     config_path.write_text(
         "model_catalog_json = {}\n{}".format(
             json.dumps(target),
-            config_path.read_text(encoding="utf-8"),
+            config_path.read_text(encoding="utf-8") if config_path.exists() else "",
         ),
         encoding="utf-8",
     )
@@ -345,9 +346,15 @@ def scenario_project_docs_pair(source: Path, version: str, root: Path) -> None:
     if manifest.get("schemaVersion") != 4 or manifest.get("version") != version:
         raise E2EFailure("Project Doc Reader manifest has the wrong schema/version")
     resources = manifest.get("resources", [])
-    if [item.get("target") for item in resources] != ["agents/project-doc-reader-tool.py"]:
-        raise E2EFailure("Project Doc Reader manifest does not own its helper")
-    managed = (agent, helper, routing, manifest_path, config)
+    expected_resources = ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
+                          "agents/project-doc-reader/reader-request-v2.schema.json",
+                          "agents/project-doc-reader/reader-response-v2.schema.json"]
+    if [item.get("target") for item in resources] != expected_resources:
+        raise E2EFailure("Project Doc Reader manifest does not own its protocol resources")
+    resource_paths = tuple(home / target for target in expected_resources)
+    if not all(path.is_file() for path in resource_paths):
+        raise E2EFailure("Project Doc Reader resource is missing")
+    managed = (agent, routing, manifest_path, config) + resource_paths
     before = snapshot(managed)
 
     install(source, version, root, components=components)
@@ -357,7 +364,7 @@ def scenario_project_docs_pair(source: Path, version: str, root: Path) -> None:
     install(source, version, root, action="uninstall")
     if plugin_names(root, source):
         raise E2EFailure("Project Docs pair uninstall left a plugin installed")
-    if agent.exists() or helper.exists() or manifest_path.exists():
+    if agent.exists() or any(path.exists() for path in resource_paths) or manifest_path.exists():
         raise E2EFailure("Project Docs pair uninstall left Reader state")
     if routing.read_bytes() != sentinel:
         raise E2EFailure("Project Docs pair uninstall did not restore the sentinel")
