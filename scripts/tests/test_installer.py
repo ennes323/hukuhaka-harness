@@ -26,6 +26,7 @@ from scripts.install.main import (
     build_parser,
 )
 from scripts.install.terminal import HostInstallPlan, prompt_install_plan
+from scripts.install.state import InstallState
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -800,13 +801,15 @@ class CodexPluginCacheTests(unittest.TestCase):
         self.codex_home = Path(self.temp.name) / "codex-home"
         self.codex_home.mkdir()
         catalog = json.loads((ROOT / "components.json").read_text(encoding="utf-8"))
-        self.adapter = CodexInstaller(
-            ROOT,
-            catalog,
-            "1.1.6",
-            local_source=True,
-        )
-        self.adapter.codex_home = self.codex_home
+        with mock.patch(
+            "scripts.install.codex.resolve_codex_home", return_value=self.codex_home
+        ):
+            self.adapter = CodexInstaller(
+                ROOT,
+                catalog,
+                "1.1.6",
+                local_source=True,
+            )
         self.component = "hukuhaka-worklog"
         self.source = ROOT / "marketplace" / self.component
         self.version = json.loads(
@@ -902,9 +905,10 @@ class CodexPluginCacheTests(unittest.TestCase):
         self.populate_cache()
         self.adapter.install_results[self.component] = self.result()
         plugin = self.installed_plugin()
-        plugin["version"] = "0.2.0"
 
         with mock.patch.object(self.adapter, "_plugins", return_value=[plugin]):
+            self.adapter.verify({self.component})
+            plugin["version"] = "0.2.0"
             with self.assertRaisesRegex(
                 InstallerError, "post-install version does not match"
             ):
@@ -962,18 +966,66 @@ class CodexGuidanceTests(unittest.TestCase):
 
     def test_uninstall_recovers_before_guidance_manifest_noop_check(self) -> None:
         self.deployment().deploy()
-        manifest = self.codex_home / ".hukuhaka-agents-manifest.json"
+        manifest = self.deployment().state.path
+        self.assertTrue(manifest.is_file())
         transaction = FileTransaction(self.codex_home)
         transaction.__enter__()
         transaction.remove(manifest)
+        self.assertFalse(manifest.exists())
+        self.assertIn("# Managed", (self.codex_home / "AGENTS.md").read_text())
 
         self.deployment().uninstall()
 
-        self.assertFalse(manifest.exists())
+        self.assertNotIn("agents-md", self.deployment().state.read()["components"])
         target = self.codex_home / "AGENTS.md"
         self.assertTrue(
             not target.exists() or "# Managed" not in target.read_text()
         )
+
+    def test_missing_block_is_restored_or_removed_without_losing_user_text(self) -> None:
+        target = self.codex_home / "AGENTS.md"
+        for action in ("deploy", "uninstall"):
+            with self.subTest(action=action):
+                self.deployment().deploy()
+                target.write_bytes(b"# User\r\nKeep exactly.\r\n")
+                target.chmod(0o640)
+                getattr(self.deployment(), action)()
+                if action == "deploy":
+                    self.assertTrue(target.read_bytes().startswith(b"# User\r\nKeep exactly.\r\n"))
+                    self.assertEqual(1, target.read_text().count("# Managed"))
+                    installed = target.read_bytes()
+                    self.deployment().deploy()
+                    self.assertEqual(installed, target.read_bytes())
+                else:
+                    self.assertEqual(b"# User\r\nKeep exactly.\r\n", target.read_bytes())
+                    self.assertFalse(self.deployment().manifest_path.exists())
+                    self.assertNotIn("agents-md", self.deployment().state.read()["components"])
+                self.assertEqual(0o640, stat.S_IMODE(target.stat().st_mode))
+
+    def test_incomplete_block_still_fails_without_changing_files(self) -> None:
+        self.deployment().deploy()
+        target = self.codex_home / "AGENTS.md"
+        target.write_text("# User\n<!-- hukuhaka-harness:begin -->\nEdited\n")
+        before = target.read_bytes()
+        manifest = self.deployment().state.path.read_bytes()
+        with self.assertRaises(StateError):
+            self.deployment().deploy()
+        self.assertEqual(before, target.read_bytes())
+        self.assertEqual(manifest, self.deployment().state.path.read_bytes())
+
+    def test_stale_receipt_removal_preserves_an_empty_or_absent_document(self) -> None:
+        target = self.codex_home / "AGENTS.md"
+        for exists in (True, False):
+            with self.subTest(exists=exists):
+                self.deployment().deploy()
+                if exists:
+                    target.write_bytes(b"")
+                else:
+                    target.unlink()
+                self.deployment().uninstall()
+                self.assertEqual(exists, target.exists())
+                self.assertFalse(self.deployment().manifest_path.exists())
+                self.assertNotIn("agents-md", self.deployment().state.read()["components"])
 
     def test_disabled_deploy_delegates_without_self_deadlock(self) -> None:
         self.deployment().deploy()

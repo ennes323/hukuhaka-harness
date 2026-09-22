@@ -36,7 +36,7 @@ function designRead(relativePath) {
   return fs.readFileSync(path.join(DESIGNER_ROOT, relativePath), "utf8");
 }
 
-test("planner runs four content stages and stops plan-only at spec", () => {
+test("planner package and instructions define four stages and a plan-only stop", () => {
   const skill = read("SKILL.md");
   const description = skill.match(/^description:\s*"(.+)"$/m)?.[1] ?? "";
   assert.ok(description.length > 0 && Buffer.byteLength(description) < 1024);
@@ -73,7 +73,7 @@ test("content-v1 spec has no mandatory design fields or future anchor dependency
   assert.match(read("stages/4-lock.md"), /must not depend on\s+a future A#/);
 });
 
-test("designer owns design and keeps content read-only", () => {
+test("designer instructions assign design ownership and read-only content", () => {
   const designer = designRead("SKILL.md");
   const schema = designRead("references/design-schema.md");
   assert.match(designer, /Do not edit \x60spec.md\x60/);
@@ -97,7 +97,7 @@ test("designer owns design and keeps content read-only", () => {
   assert.match(designer, /\x60unavailable\x60 for missing build or rendering capability/);
 });
 
-test("unmarked and incomplete plans cannot silently acquire new design permissions", () => {
+test("instructions restrict design permissions for unmarked and incomplete plans", () => {
   const compatibility = read("references/plan-compatibility.md");
   for (const kind of ["Legacy combined plan", "Legacy paired plan", "Incomplete legacy pair",
     "Incomplete new plan", "Unsupported input"]) assert.ok(compatibility.includes(kind));
@@ -117,7 +117,7 @@ test("unmarked and incomplete plans cannot silently acquire new design permissio
   assert.match(read("references/build-handoff.md"), /Missing required legacy input stops the handoff/);
 });
 
-test("design restraint and craft live with the designer, not the planner", () => {
+test("package instructions assign design restraint and craft to the designer", () => {
   const schema = designRead("references/design-schema.md");
   const designer = designRead("SKILL.md");
   assert.match(read("references/principles.md"), /Comprehension over coverage/);
@@ -141,7 +141,7 @@ test("design restraint and craft live with the designer, not the planner", () =>
   }
 });
 
-test("designer selects progressive references and bundled links resolve after the move", () => {
+test("designer instructions define reference selection and bundled links resolve", () => {
   const designer = designRead("SKILL.md");
   const index = designRead("references/reference-index.md");
   assert.match(designer, /select zero to three craft files/);
@@ -168,7 +168,7 @@ test("designer selects progressive references and bundled links resolve after th
   assert.doesNotMatch(runtime, /design source:/i);
 });
 
-test("handoff is one separate designer with no parent design or build", () => {
+test("handoff instructions require one separate designer and restrict parent work", () => {
   const handoff = read("references/build-handoff.md");
   const designer = designRead("SKILL.md");
   assert.match(handoff, /Stage 4 finalizes the content spec/);

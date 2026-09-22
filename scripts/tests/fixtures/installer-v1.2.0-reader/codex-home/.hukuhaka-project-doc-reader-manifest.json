@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 4,
+  "component": "project-doc-reader",
+  "version": "1.2.0",
+  "agentTarget": "agents/project-doc-reader.toml",
+  "agentHash": "40deaaf8acdd0914c6f9bc4406c725c69979cdd5245e4cd6df5161618406596b",
+  "resources": [
+    {
+      "target": "agents/project-doc-reader-tool.py",
+      "hash": "350cd0ae01e3dead10de01e9babcb4af98c4f88b07ba1f809fbde882d9509247"
+    }
+  ]
+}

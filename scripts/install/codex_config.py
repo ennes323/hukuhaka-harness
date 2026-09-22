@@ -25,6 +25,7 @@ from .common import (
 Key = Tuple[str, ...]
 
 from .settings_catalog import RECOMMENDED, WAIT_SETTINGS, CONTEXT_KEYS, CAPACITY_KEYS
+from .state import InstallState
 
 # Compatibility exports; the catalog owns all current settings definitions.
 SUBAGENT_SETTINGS = {("features", "multi_agent"): RECOMMENDED[("features", "multi_agent")]}
@@ -1119,11 +1120,9 @@ class CodexAgentPolicy:
         }:
             return False
         manifest = self.codex_home / ".hukuhaka-evidence-scout-manifest.json"
-        if manifest.is_symlink() or not manifest.is_file():
-            return False
         try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = InstallState(self.codex_home).receipt("evidence-scout", manifest)
+        except (OSError, StateError):
             return False
         return (
             isinstance(payload, dict)

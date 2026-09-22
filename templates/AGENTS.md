@@ -104,9 +104,27 @@ Proceed within existing authorization unless the user requested review first.
 
 - Use available subagents to parallelize work when doing so can save time or
   improve quality, within host and role permissions.
-- Match the model and reasoning effort to task complexity and model capability,
-  considering cost. Prefer a lower-cost capable option for routine work.
-  Before spawning, briefly state the model, effort, assignment, and why the
+- Choose the model by task complexity, ambiguity, and the cost of mistakes.
+  Use these defaults and allowed effort values when available:
+
+  | Model | Default effort | Allowed efforts | Typical use |
+  |---|---|---|---|
+  | `gpt-5.6-luna` | `max` | `max` only | Routine and moderately complex work with clear scope. |
+  | `gpt-5.6-sol` | `medium` | `low`, `medium`, `high` | Implementation, debugging, and review within a clearly defined worker scope. |
+  | `gpt-6-astra` | `medium` | `low`, `medium` | Complex delegated work requiring substantial independent judgment in design, diagnosis, or cross-component decisions. |
+
+  Prefer Luna when it can complete the task reliably. Use Sol for clearly scoped
+  worker assignments that require stronger implementation or debugging judgment.
+  Reserve Astra for complex assignments that require substantial independent
+  reasoning and decisions within the delegated scope.
+- Adjust effort within the allowed values according to uncertainty, reasoning
+  demands, and the cost of mistakes. Use the default when there is no clear
+  reason to adjust. Luna always uses max.
+- Duration or volume alone does not justify a more capable model or higher effort.
+  Avoid Terra by default. Follow explicit user choices and host constraints.
+  If a preferred option is unavailable, use the closest suitable available
+  option and explain why.
+- Before spawning, briefly state the model, effort, assignment, and why the
   choice fits. If settings are inherited or fixed by the role, say so.
 - Give each agent a clear objective, relevant context, ownership, and expected
   outcome. Let agents determine how to complete their assignments.

@@ -6,6 +6,22 @@ All notable changes to hukuhaka-harness are documented here. The project follows
 Plugin versions (`marketplace/<plugin>/.codex-plugin/plugin.json`) are
 independent from the repository version.
 
+## [1.3.1] — 2026-09-22
+
+- Define global subagent model defaults and allowed reasoning efforts: Luna max,
+  Sol low/medium/high (default medium), and Astra low/medium (default medium),
+  with scoped worker assignments for Sol and complex independent judgment for Astra.
+- Allow clone-based installation over an existing official remote or different
+  local marketplace registration, with source verification and rollback.
+- Consolidate component ownership and installer operation history in the
+  installer-only `hk-config.toml`, with transactional legacy receipt migration,
+  partial and interrupted attempt tracking, and explicit record backup recovery.
+- Preserve plugins when managed-file conflicts are detected before install,
+  reset, or removal. Support older Reader receipts with fewer helper files and
+  restore absent managed instruction blocks without replacing user text.
+- Distinguish validation-check totals from unittest execution and skip counts;
+  clarify which checks use a fake CLI or inspect static instructions.
+
 ## [1.3.0] — 2026-09-17
 
 - Updated Worklog to 0.5.0, Project Docs to 0.2.0, Engineering Plan to 0.3.0,

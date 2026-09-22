@@ -11,6 +11,7 @@ from unittest import mock
 
 from scripts.install.codex import CodexCustomAgentDeployment
 from scripts.install.common import DriftError, InstallerError, StateError
+from scripts.install.state import InstallState
 
 
 class CustomAgentDeploymentTests(unittest.TestCase):
@@ -48,6 +49,9 @@ class CustomAgentDeploymentTests(unittest.TestCase):
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             deployment.deploy()
 
+    def receipt(self, name="sample-agent"):
+        return InstallState(self.codex_home).read()["components"].get(name, {}).get("receipt")
+
     def test_fresh_repeat_and_remove_preserve_surrounding_agents_text(self) -> None:
         agents = self.codex_home / "AGENTS.md"
         original = b"# User guidance\n\nKeep this byte-for-byte.\n"
@@ -57,19 +61,20 @@ class CustomAgentDeploymentTests(unittest.TestCase):
         self.deploy(deployment)
         installed = agents.read_bytes()
         self.assertEqual(original, installed)
-        manifest = deployment.manifest_path.read_bytes()
+        manifest = self.receipt()
         self.deploy(self.deployment("sample-agent"))
 
         self.assertEqual(installed, agents.read_bytes())
-        self.assertEqual(manifest, deployment.manifest_path.read_bytes())
+        self.assertEqual(manifest, self.receipt())
         self.assertEqual(
             4,
-            json.loads(manifest.decode("utf-8"))["schemaVersion"],
+            manifest["schemaVersion"],
         )
         self.deployment("sample-agent").uninstall()
         self.assertEqual(original, agents.read_bytes())
         self.assertFalse(deployment.target.exists())
         self.assertFalse(deployment.manifest_path.exists())
+        self.assertIsNone(self.receipt())
 
     def test_byte_identical_unmanaged_agent_is_adopted(self) -> None:
         deployment = self.deployment("sample-agent")
@@ -78,7 +83,8 @@ class CustomAgentDeploymentTests(unittest.TestCase):
 
         self.deploy(deployment)
 
-        self.assertTrue(deployment.manifest_path.is_file())
+        self.assertIsNotNone(self.receipt())
+        self.assertFalse(deployment.manifest_path.exists())
         self.assertEqual(deployment.source.read_bytes(), deployment.target.read_bytes())
 
     def test_different_unmanaged_agent_is_preserved_without_force(self) -> None:
@@ -91,6 +97,7 @@ class CustomAgentDeploymentTests(unittest.TestCase):
 
         self.assertEqual("user-owned\n", deployment.target.read_text(encoding="utf-8"))
         self.assertFalse(deployment.manifest_path.exists())
+        self.assertIsNone(self.receipt())
 
     def test_two_agents_coexist_and_uninstall_independently(self) -> None:
         first = self.deployment("first-agent")
@@ -132,7 +139,7 @@ class CustomAgentDeploymentTests(unittest.TestCase):
 
         deployment.target.unlink()
         deployment.manifest_path.symlink_to(deployment.source)
-        with self.assertRaisesRegex(StateError, "invalid sample-agent manifest"):
+        with self.assertRaisesRegex(StateError, "state path is a symlink"):
             deployment.deploy()
 
     def test_validation_failure_rolls_back_all_agent_files(self) -> None:
@@ -151,6 +158,7 @@ class CustomAgentDeploymentTests(unittest.TestCase):
         self.assertEqual(original, agents.read_bytes())
         self.assertFalse(deployment.target.exists())
         self.assertFalse(deployment.manifest_path.exists())
+        self.assertIsNone(self.receipt())
         self.assertFalse(deployment.config.path.exists())
 
     def test_agent_install_does_not_use_or_warn_about_guidance_override(self) -> None:
@@ -197,7 +205,8 @@ class CustomAgentDeploymentTests(unittest.TestCase):
         deployment.verify()
         self.assertEqual(original, deployment.routing_target.read_bytes())
         self.assertEqual(0o640, deployment.routing_target.stat().st_mode & 0o777)
-        self.assertNotIn("routingHash", json.loads(deployment.manifest_path.read_text()))
+        self.assertNotIn("routingHash", self.receipt())
+        self.assertFalse(deployment.manifest_path.exists())
         self.deploy(deployment)
         deployment.uninstall()
         self.assertEqual(original, deployment.routing_target.read_bytes())

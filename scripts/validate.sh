@@ -169,6 +169,7 @@ while IFS=$'\t' read -r outcome message; do
         pass) pass "$message" ;;
         skip) skip "$message" ;;
         fail) fail "$message"; SUITE_FAILURES=$((SUITE_FAILURES+1)) ;;
+        info) echo "  $message" ;;
         *) fail "invalid unit test runner output"; SUITE_FAILURES=$((SUITE_FAILURES+1)) ;;
     esac
 done < "$VALIDATE_TMP/suites.tsv"
@@ -233,7 +234,7 @@ echo "Report planner contract:"
 if [ ! -f "$REPORT_PLANNER_TEST" ]; then
     skip "report-planner static tests (private harness not present in this checkout)"
 elif node --test "$REPORT_PLANNER_TEST" > "$VALIDATE_TMP/report-planner-test.log" 2>&1; then
-    pass "document contract + selective reference routing"
+    pass "static report-planner instructions and package contracts"
 else
     fail "report-planner static tests — $(tail -3 "$VALIDATE_TMP/report-planner-test.log" | tr '\n' ' ')"
 fi
@@ -248,7 +249,7 @@ if [ ! -f "$UIUX_FOUNDATION_TEST" ]; then
         skip "UI/UX Foundation static tests (private harness not present in this checkout)"
     fi
 elif node --test "$UIUX_FOUNDATION_TEST" > "$VALIDATE_TMP/uiux-foundation-test.log" 2>&1; then
-    pass "implicit routing + design ownership + rendered verification"
+    pass "static UI/UX instructions and package contracts"
 else
     fail "UI/UX Foundation static tests — $(tail -3 "$VALIDATE_TMP/uiux-foundation-test.log" | tr '\n' ' ')"
 fi
@@ -309,7 +310,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "$PASSES passed, $SKIPS skipped, $FAILURES failed."
+echo "Validation checks: $PASSES passed, $SKIPS skipped, $FAILURES failed (check totals, not test or user-scenario counts)."
 echo "Validation elapsed: $((SECONDS-VALIDATE_START_SECONDS))s ($PROFILE, $VALIDATE_JOBS workers)."
 if [ "$FAILURES" -eq 0 ]; then
     exit 0

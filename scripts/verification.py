@@ -116,14 +116,20 @@ def cache_directory(repo: Path) -> Optional[Path]:
     return common.resolve() / "hukuhaka-verification"
 
 
-def validation_environment(cache: Optional[Path]) -> dict[str, str]:
-    values = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", HUKUHAKA_RUN_LIVE_CLI="0",
-                  GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", PYTHONNOUSERSITE="1")
+def repository_environment(environment: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """Let child commands select their repository by cwd, not hook exports."""
+    values = dict(os.environ if environment is None else environment)
     # Git exports repository selectors to hooks. A child must inspect its own
     # detached checkout/plain snapshot, never the hook caller's index or tree.
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         values.pop(key, None)
+    return values
+
+
+def validation_environment(cache: Optional[Path]) -> dict[str, str]:
+    values = dict(repository_environment(), PYTHONDONTWRITEBYTECODE="1", HUKUHAKA_RUN_LIVE_CLI="0",
+                  GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", PYTHONNOUSERSITE="1")
     if cache is not None:
         values[CACHE_DIR_ENV] = str(cache)
     return values

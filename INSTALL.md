@@ -9,6 +9,12 @@ review the component selection before applying it. Rerunning the remote command
 uses the latest published release. Running from a clone uses that clone's files;
 update the checkout to the intended release first.
 
+When a checkout installs plugins, the installer switches an existing official
+remote or local marketplace registration to that checkout. If switching fails,
+it attempts to restore the previous local path or exact remote revision before
+reporting the failure. Unrecognized remote sources remain conflicts. Keep the
+checkout available while it is registered as the local marketplace.
+
 The picker starts with the detected installed components, or the recommended
 set for a new installation. Review the final set when updating.
 
@@ -70,6 +76,51 @@ the managed global instruction block in that reset. Uninstall removes managed
 components; it does not reset independent Codex settings or re-enable subagents.
 Unrelated plugins, configuration, and guidance outside managed blocks are preserved.
 Review reported conflicts before using `--force` to authorize replacement.
+
+Install, reset, and uninstall check managed agent and instruction files before
+changing plugins. A detected file conflict leaves the plugins in place. Failures
+during later CLI operations can still leave a partial result; successful earlier
+components are not rolled back as a group.
+
+Older Reader receipts can own fewer helper files than the current version.
+Updates add the new helpers after checking for user-file conflicts; removal
+deletes only files recorded in the receipt. If the global instruction receipt
+remains but its block is absent, installing `agents-md` adds the block again
+without replacing existing user text. Removing it clears the stale receipt.
+Incomplete or edited blocks remain conflicts.
+
+## Installer records and recovery
+
+The installer announces and maintains `hk-config.toml` in the Codex home
+(`~/.codex` by default). This file is only for Hukuhaka installation management.
+It records component versions, ownership receipts, installer versions, timestamps,
+completed steps, and failure stages. It is not a Codex runtime configuration.
+The most recent 50 finished operations are retained; error records contain a
+stage and error type, not raw command output.
+
+```bash
+./scripts/install.sh codex state show
+./scripts/install.sh codex state show --json
+./scripts/install.sh codex state recover --dry-run
+./scripts/install.sh codex state recover --yes
+```
+
+Validated legacy agent and guidance manifests are backed up under `hk-backups/`
+and moved into the central record during component operations. The migration
+and component file changes share a file transaction. Existing instruction block
+markers remain necessary to distinguish managed text from your own text.
+Independent settings and policy restoration records are preserved.
+
+`state show` reads recorded state; it does not verify the current installed files.
+New operations record partial failures and mark abandoned attempts as interrupted.
+`state recover` explicitly restores `hk-config.toml.bak`, preserving the replaced
+record under `hk-backups/`. It restores records only, not component files or Codex
+settings. Rerun installation to check the restored receipts against actual files.
+If interrupted file transactions remain, recovery instead announces and replays
+those transactions, including their affected files, without applying an older
+record backup. Use `--dry-run` to inspect which recovery action is pending.
+Malformed legacy receipts and conflicting user files still require review; a
+record backup does not establish ownership of unknown files.
 
 ## Settings and profiles
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-platform Codex release smoke. With no source directory it exercises the
+# Cross-platform public bootstrap smoke with a fake Codex CLI. With no source directory it exercises the
 # documented public bootstrap at the exact release tag. Tests may pass a source
 # directory to exercise the same lifecycle without network access.
 set -euo pipefail
@@ -193,7 +193,7 @@ fi
 printf '%s\n' "$optional_output"
 grep -Fq "Agent runtime:  existing settings preserved (V1/V2 state not inferred)" <<<"$optional_output"
 
-python3 - "$CODEX_HOME" "$SMOKE_ROOT/source-models-cache.json" "$EXPECTED_VERSION" <<'PY'
+python3 - "$CODEX_HOME" "$SMOKE_ROOT/source-models-cache.json" "$EXPECTED_VERSION" "$SOURCE_ROOT" <<'PY'
 import json
 import pathlib
 import re
@@ -202,20 +202,25 @@ import sys
 root = pathlib.Path(sys.argv[1])
 source_cache = pathlib.Path(sys.argv[2])
 version = sys.argv[3]
+sys.path.insert(0, sys.argv[4])
+from scripts.install.state import InstallState
+
+state = InstallState(root).read()
+components = state["components"]
 
 agent = root / "agents" / "astra_worker.toml"
 routing = root / "AGENTS.md"
-manifest_path = root / ".hukuhaka-astra_worker-manifest.json"
+manifest_path = root / "hk-config.toml"
 config_path = root / "config.toml"
 
 for path in (agent, routing, manifest_path, config_path):
     if not path.is_file():
         raise SystemExit("missing installed Astra Worker artifact: {}".format(path))
 runner = root / "agents" / "result-runner.toml"
-if not runner.is_file() or not (root / ".hukuhaka-result-runner-manifest.json").is_file():
+if not runner.is_file() or "result-runner" not in components:
     raise SystemExit("missing installed Result Runner artifacts")
 scout = root / "agents" / "evidence-scout.toml"
-if not scout.is_file() or not (root / ".hukuhaka-evidence-scout-manifest.json").is_file():
+if not scout.is_file() or "evidence-scout" not in components:
     raise SystemExit("missing installed Evidence Scout artifacts")
 for path, model, effort in (
     (agent, "gpt-5.6-sol", "medium"),
@@ -234,9 +239,9 @@ if (root / "models_cache.json").read_bytes() != source_cache.read_bytes():
     raise SystemExit("models_cache.json changed")
 
 for name in ("astra_worker", "result-runner", "evidence-scout"):
-    current_manifest = json.loads(
-        (root / ".hukuhaka-{}-manifest.json".format(name)).read_text(encoding="utf-8")
-    )
+    if (root / ".hukuhaka-{}-manifest.json".format(name)).exists():
+        raise SystemExit("obsolete component manifest retained: {}".format(name))
+    current_manifest = components[name]["receipt"]
     if current_manifest.get("version") != version:
         raise SystemExit(
             "{} manifest version {!r} != {!r}".format(
@@ -268,4 +273,4 @@ if (root / "config.toml.hukuhaka-backup").exists():
     raise SystemExit("component installation unexpectedly rewrote config")
 PY
 
-printf 'Codex Worker, Runner, and Scout live install verified for v%s\n' "$EXPECTED_VERSION"
+printf 'Public bootstrap and component lifecycle verified with fake Codex CLI for v%s\n' "$EXPECTED_VERSION"

@@ -24,6 +24,7 @@ from scripts.install.codex_config import (
 )
 from scripts.install.common import DriftError, InstallerError
 from scripts.install.terminal import prompt_install_plan
+from scripts.install.state import InstallState
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,11 +90,14 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
             json.dumps(manifest), encoding="utf-8"
         )
 
+    def receipt(self):
+        return InstallState(self.codex_home).read()["components"].get("evidence-scout", {}).get("receipt")
+
     def test_install_is_complete_and_idempotent(self) -> None:
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             self.deployment().deploy()
             self.assertFalse((self.codex_home / "AGENTS.md").exists())
-            first_manifest = (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_bytes()
+            first_manifest = self.receipt()
             self.deployment().deploy()
 
         self.assertEqual(
@@ -103,12 +107,10 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
         self.assertEqual(
             first_manifest,
-            (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_bytes(),
+            self.receipt(),
         )
         self.assertFalse((self.codex_home / "config.toml").exists())
-        manifest = json.loads(
-            (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
-        )
+        manifest = self.receipt()
         self.assertEqual(4, manifest["schemaVersion"])
         self.assertNotIn("routingHash", manifest)
         self.assertNotIn("catalogTarget", manifest)
@@ -157,9 +159,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         self.assertIn(
             '[agents.custom]\nvalue = "keep"', config.read_text(encoding="utf-8")
         )
-        manifest = json.loads(
-            (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
-        )
+        manifest = self.receipt()
         self.assertEqual(4, manifest["schemaVersion"])
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
 
@@ -186,7 +186,8 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             self.deployment().deploy()
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
-        self.assertEqual(4, json.loads(path.read_text())["schemaVersion"])
+        self.assertEqual(4, self.receipt()["schemaVersion"])
+        self.assertFalse(path.exists())
 
     def test_agent_install_leaves_override_unchanged_without_warning(self) -> None:
         override = self.codex_home / "AGENTS.override.md"
@@ -238,7 +239,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             self.deployment().deploy()
 
-        self.assertTrue((self.codex_home / EVIDENCE_SCOUT_MANIFEST).is_file())
+        self.assertIsNotNone(self.receipt())
         self.assertEqual(self.source.read_bytes(), target.read_bytes())
 
     def test_conflicting_manual_agent_is_preserved_without_force(self) -> None:
@@ -251,6 +252,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
 
         self.assertEqual("user agent\n", target.read_text(encoding="utf-8"))
         self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
+        self.assertIsNone(self.receipt())
 
     def test_force_repairs_managed_agent_and_routing_drift(self) -> None:
         self.seed_legacy_v2()
@@ -287,6 +289,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         self.assertEqual(original_config, config.read_bytes())
         self.assertFalse((self.codex_home / "agents" / "evidence-scout.toml").exists())
         self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
+        self.assertIsNone(self.receipt())
         self.assertFalse((self.codex_home / "models-luna-v2.json").exists())
 
     def test_uninstall_removes_only_managed_agent_and_routing(self) -> None:
@@ -310,6 +313,7 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
         self.assertEqual(0o640, stat.S_IMODE(agents.stat().st_mode))
         self.assertFalse((self.codex_home / "agents" / "evidence-scout.toml").exists())
         self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
+        self.assertIsNone(self.receipt())
         self.assertEqual(configured, (self.codex_home / "config.toml").read_bytes())
         self.assertFalse((self.codex_home / "models-luna-v2.json").exists())
 
@@ -349,6 +353,9 @@ class EvidenceScoutDeploymentTests(unittest.TestCase):
 
 
 class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
+    def receipt(self):
+        return InstallState(self.codex_home).read()["components"].get("evidence-scout", {}).get("receipt")
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="hukuhaka evidence integration ")
         self.codex_home = Path(self.temp.name) / ".codex"
@@ -394,6 +401,7 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
         self.assertTrue((self.codex_home / "agents" / "astra_worker.toml").is_file())
         self.assertFalse((self.codex_home / "agents" / "evidence-scout.toml").exists())
         self.assertFalse((self.codex_home / EVIDENCE_SCOUT_MANIFEST).exists())
+        self.assertIsNone(self.receipt())
         self.assertFalse((self.codex_home / "models_cache.json").exists())
         self.assertFalse((self.codex_home / "models-luna-v2.json").exists())
         self.assertFalse((self.codex_home / "config.toml").exists())
@@ -409,9 +417,7 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
 
         self.assertEqual((ROOT / "agents/evidence-scout.toml").read_bytes(), first)
         self.assertEqual(first, (self.codex_home / "agents/evidence-scout.toml").read_bytes())
-        manifest = json.loads(
-            (self.codex_home / EVIDENCE_SCOUT_MANIFEST).read_text(encoding="utf-8")
-        )
+        manifest = self.receipt()
         self.assertEqual(4, manifest.get("schemaVersion"))
         self.assertFalse(any(key.startswith("routing") for key in manifest))
 
@@ -427,8 +433,10 @@ class EvidenceScoutInstallerIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(DriftError, "managed evidence-scout"):
                 installer.install(["astra_worker", "result-runner"])
             self.assertEqual(changed, scout.read_bytes())
-            self.assertTrue((self.codex_home / EVIDENCE_SCOUT_MANIFEST).is_file())
-            self.assertTrue((self.codex_home / "agents/astra_worker.toml").is_file())
+            self.assertIsNotNone(self.receipt())
+            self.assertFalse((self.codex_home / "agents/astra_worker.toml").exists())
+            self.assertFalse((self.codex_home / "agents/result-runner.toml").exists())
+            self.assertEqual([], installer.completed)
 
     def test_interactive_row_names_the_runtime_contract(self) -> None:
         output = io.StringIO()

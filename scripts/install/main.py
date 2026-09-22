@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from .codex import CodexInstaller
+from .codex import CodexInstaller, resolve_codex_home
 from .codex_config import (
     CONTEXT_POLICY_SCOPES,
     RECOMMENDED_SETTINGS,
@@ -28,7 +28,8 @@ from .codex_config import (
     prompt_context_settings,
     prompt_settings,
 )
-from .common import InstallerError, StateError, load_json
+from .common import InstallerError, InstallerLock, StateError, load_json
+from .state import InstallState, decode_state
 from .terminal import HostInstallPlan, csv_items, csv_value, prompt_install_plan
 from .settings import Settings, cli_literal, read_profile, wizard
 from .settings_catalog import RECOMMENDED, KEYS
@@ -277,6 +278,12 @@ class Installer:
             desired = set(plan.components)
             before = current.get(plan.host, set())
             print(HOST_LABELS[plan.host])
+            if plan.host == "codex":
+                print("  Installer records: {} (Hukuhaka management only)".format(resolve_codex_home() / "hk-config.toml"))
+                print("  Valid legacy component receipts will be backed up and migrated.")
+                if self.args.local_source and desired:
+                    print("  Marketplace source: use local checkout {}".format(self.repo_root))
+                    print("  Existing official remote or local registration will be switched, with rollback attempted on failure.")
             print("  Components")
             print(
                 "    Install/update: {}".format(
@@ -380,9 +387,9 @@ class Installer:
     def _apply_host(
         self, plan: HostInstallPlan, before: Optional[Set[str]] = None
     ) -> HostResult:
-        if not plan.reset and not plan.components and not before:
-            return HostResult(plan.host, "noop")
         installer = self._codex()
+        if not plan.reset and not plan.components and not before and not installer.state.read()["components"]:
+            return HostResult(plan.host, "noop")
         try:
             installer.install(
                 plan.components,
@@ -801,8 +808,72 @@ class Installer:
         policy.apply(plan)
         return 0
 
+    def _installer_state(self) -> int:
+        state = InstallState(resolve_codex_home())
+        if self.args.state_action == "show":
+            data = state.read()
+            if self.args.json:
+                print(json.dumps(data, indent=2, ensure_ascii=False))
+                return 0
+            print("Installer management record: {}".format(state.path))
+            print("Recorded components (last verified by this installer):")
+            for name, record in sorted(data["components"].items()):
+                print("  {}: {} (installer {}, {})".format(
+                    name, record["version"], record["installer_version"], record["provenance"],
+                ))
+            if not data["components"]:
+                print("  none recorded; legacy installs are migrated on the next component operation")
+            print("Recent operations:")
+            for operation in data["operations"][-10:]:
+                print("  {} {}: {} (installer {}, stage {})".format(
+                    operation["started_at"], operation["action"], operation["status"],
+                    operation["installer_version"], operation["stage"],
+                ))
+            print("Last valid record backup: {}".format(state.backup_path))
+            print("Migration backups: {}".format(state.home / "hk-backups"))
+            return 0
+        # Pending file transactions take precedence over an older record backup.
+        # Replaying them can restore payload files, so disclose that separately.
+        if state.has_pending_transactions():
+            print("Recover interrupted installer file transactions, including their affected component files.")
+            print("The older installer record backup will not be applied.")
+            if self.args.dry_run:
+                print("Dry run. No changes were made.")
+                return 0
+            if not self._confirm():
+                print("Exit. No changes were made.")
+                return 0
+            with InstallerLock(state.home, name="hk-operation.lock"):
+                recovered = state.recover_transactions()
+                identity = state.begin_operation("recover", self.version, [])
+                state.finish_operation(identity, "success", ["recovered {} file transactions".format(recovered)])
+            print("Recovered {} interrupted file transaction(s). Rerun installation to verify components.".format(recovered))
+            return 0
+        # With no pending transaction, restore records only.
+        if state.backup_path.is_symlink() or not state.backup_path.is_file():
+            raise StateError("installer record backup is missing or not a regular file", stage="installer-state")
+        decode_state(state.backup_path.read_bytes())
+        print("Restore installer records from {}.".format(state.backup_path))
+        print("The current record will be backed up. Installed files will be rechecked on the next installation.")
+        if self.args.dry_run:
+            print("Dry run. No changes were made.")
+            return 0
+        if not self._confirm():
+            print("Exit. No changes were made.")
+            return 0
+        with InstallerLock(state.home, name="hk-operation.lock"):
+            archived = state.restore_backup()
+            identity = state.begin_operation("recover", self.version, [])
+            state.finish_operation(identity, "success", ["restored installer record backup"])
+        if archived:
+            print("Previous record preserved at {}".format(state.home / archived))
+        print("Installer records restored. Component files and Codex settings were not changed.")
+        return 0
+
     def automation(self) -> int:
         host = self.args.host
+        if self.args.action == "state":
+            return self._installer_state()
         if (self.args.action == "agents"
                 and self.args.agent_action == "model"
                 and self.args.model_action == "inspect"):
@@ -834,14 +905,15 @@ class Installer:
         if self.args.action == "uninstall":
             current = self._current(host)
             print("{} uninstall: {}".format(HOST_LABELS[host], csv_value(sorted(current)) or "none"))
+            print("Installer records retained at {}".format(resolve_codex_home() / "hk-config.toml"))
             if not self._confirm():
                 print("Exit. No changes were made.")
                 return 0
-            if not current:
+            adapter = self._codex()
+            if not current and not adapter.state.read()["components"]:
                 return self._print_results(
                     [HostResult(host, "noop")], dry_run=self.args.dry_run
                 )
-            adapter = self._codex()
             try:
                 adapter.uninstall()
                 result = HostResult(host, "success")
@@ -990,6 +1062,15 @@ def build_parser() -> argparse.ArgumentParser:
         _add_mutation_flags(uninstall)
         _add_bootstrap_passthrough(uninstall)
         if host == "codex":
+            state = actions.add_parser("state", help="inspect or recover Hukuhaka installer records")
+            state_actions = state.add_subparsers(dest="state_action", required=True)
+            state_show = state_actions.add_parser("show", help="show recorded components and recent operation history")
+            state_show.add_argument("--json", action="store_true")
+            _add_bootstrap_passthrough(state_show)
+            state_recover = state_actions.add_parser("recover", help="restore the last valid installer record backup")
+            state_recover.add_argument("--yes", action="store_true")
+            state_recover.add_argument("--dry-run", action="store_true")
+            _add_bootstrap_passthrough(state_recover)
             settings = actions.add_parser("settings", help="inspect, edit, compare, restore and organize settings")
             settings.add_argument("--yes", action="store_true")
             settings.add_argument("--dry-run", action="store_true")

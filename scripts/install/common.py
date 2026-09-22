@@ -150,8 +150,8 @@ def safe_join(root: Path, relative: str, *, operation: str) -> Path:
 
 
 class InstallerLock:
-    def __init__(self, root: Path) -> None:
-        self.path = root / ".hukuhaka-installer.lock"
+    def __init__(self, root: Path, *, name: str = ".hukuhaka-installer.lock") -> None:
+        self.path = root / name
         self.handle = None  # type: Optional[Any]
 
     def __enter__(self) -> "InstallerLock":

@@ -52,7 +52,7 @@ jobs:
           generate_release_notes: true
 
   live-install:
-    name: Live install (${{ matrix.os }})
+    name: Public bootstrap (${{ matrix.os }}, fake CLI)
     needs: release
     if: github.event.repository.private == false
     strategy:
@@ -65,7 +65,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run the documented explicit Codex installer
+      - name: Run the documented explicit Codex installer (fake CLI)
         shell: bash
         run: scripts/tests/live-install-codex.sh "${GITHUB_REF_NAME#v}"
 

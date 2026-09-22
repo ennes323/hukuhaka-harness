@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import json
 import os
 import shutil
@@ -15,11 +16,13 @@ from .common import (
     DriftError,
     FileTransaction,
     InstallerError,
+    InstallerLock,
     StateError,
     installer_state,
     load_json,
     sha256_file,
 )
+from .state import InstallState
 from .codex_config import (
     EVIDENCE_SCOUT_SETTINGS,
     CodexConfigEditor,
@@ -127,6 +130,7 @@ class CodexGuidanceDeployment:
         self.target = codex_home / "AGENTS.md"
         self.override = codex_home / "AGENTS.override.md"
         self.manifest_path = codex_home / GUIDANCE_MANIFEST
+        self.state = InstallState(codex_home)
 
     def _read_target(self) -> bytes:
         if not self.target.exists() and not self.target.is_symlink():
@@ -151,9 +155,9 @@ class CodexGuidanceDeployment:
         return content
 
     def _manifest(self) -> Optional[Dict[str, Any]]:
-        if not self.manifest_path.exists():
+        data = self.state.receipt("agents-md", self.manifest_path)
+        if data is None:
             return None
-        data = load_json(self.manifest_path, {})
         required = {
             "schemaVersion": int,
             "component": str,
@@ -196,13 +200,6 @@ class CodexGuidanceDeployment:
         if bounds is not None and manifest is None:
             raise StateError(
                 "managed AGENTS.md block exists without its manifest",
-                host="codex",
-                stage="guidance",
-                path=str(self.target),
-            )
-        if manifest is not None and bounds is None:
-            raise DriftError(
-                "Codex guidance manifest exists but its managed block is missing",
                 host="codex",
                 stage="guidance",
                 path=str(self.target),
@@ -274,7 +271,10 @@ class CodexGuidanceDeployment:
                 return
             with FileTransaction(self.codex_home) as transaction:
                 transaction.write_bytes(self.target, merged, target_mode)
-                transaction.write_json(self.manifest_path, next_manifest)
+                self.state.put_receipt(
+                    transaction, "agents-md", next_manifest, kind="template",
+                    installer_version=self.version, legacy_path=self.manifest_path,
+                )
                 transaction.commit()
         print("  [ok] agents-md -> {}".format(self.target))
 
@@ -287,6 +287,10 @@ class CodexGuidanceDeployment:
         if bounds is None and manifest is None:
             return None
         self._validate_current(content, bounds, manifest)
+        if bounds is None:
+            # The receipt can outlive the block. Remove only that receipt;
+            # the current document contains no managed bytes to delete.
+            return content
         assert bounds is not None and manifest is not None
         start, end = bounds
         prefix = manifest["prefix"].encode()
@@ -319,11 +323,12 @@ class CodexGuidanceDeployment:
             target_mode = _preserved_mode(self.target)
             assert writable
             with FileTransaction(self.codex_home) as transaction:
-                if merged:
-                    transaction.write_bytes(self.target, merged, target_mode)
-                else:
-                    transaction.remove(self.target)
-                transaction.remove(self.manifest_path)
+                if merged != self._read_target():
+                    if merged:
+                        transaction.write_bytes(self.target, merged, target_mode)
+                    else:
+                        transaction.remove(self.target)
+                self.state.remove_receipt(transaction, "agents-md", self.manifest_path)
                 transaction.commit()
         print("  [ok] removed agents-md from {}".format(self.target))
 
@@ -371,6 +376,7 @@ class CodexCustomAgentDeployment:
         self.routing_target = codex_home / "AGENTS.md"
         self.catalog_target = codex_home / "models-luna-v2.json"
         self.manifest_path = codex_home / ".hukuhaka-{}-manifest.json".format(name)
+        self.state = InstallState(codex_home)
         self.config = CodexConfigEditor(codex_home, dry_run=dry_run)
 
     def _read_regular(
@@ -409,16 +415,9 @@ class CodexCustomAgentDeployment:
         return content
 
     def _manifest(self) -> Optional[Dict[str, Any]]:
-        if not self.manifest_path.exists() and not self.manifest_path.is_symlink():
+        data = self.state.receipt(self.name, self.manifest_path)
+        if data is None:
             return None
-        if self.manifest_path.is_symlink() or not self.manifest_path.is_file():
-            raise StateError(
-                "invalid {} manifest".format(self.name),
-                host="codex",
-                stage=self.name,
-                path=str(self.manifest_path),
-            )
-        data = load_json(self.manifest_path, {})
         required = {
             "schemaVersion": int,
             "component": str,
@@ -463,15 +462,17 @@ class CodexCustomAgentDeployment:
                 "current {} manifest must not own routing".format(self.name),
                 host="codex", stage=self.name, path=str(self.manifest_path),
             )
-        if self.resource_targets and data["schemaVersion"] != 1:
+        if "resources" in data or (self.resource_targets and data["schemaVersion"] != 1):
             resources = data.get("resources")
-            if not isinstance(resources, list) or len(resources) != len(self.resource_targets) or any(
+            if not isinstance(resources, list) or any(
                 not isinstance(item, dict)
                 or set(item) != {"target", "hash"}
                 or not isinstance(item.get("target"), str)
                 or not isinstance(item.get("hash"), str)
                 for item in resources
-            ) or {item["target"] for item in resources} != set(self.resource_targets):
+            ) or len({item["target"] for item in resources}) != len(resources) or not {
+                item["target"] for item in resources
+            }.issubset(self.resource_targets):
                 raise StateError(
                     "invalid {} manifest".format(self.name),
                     host="codex",
@@ -559,7 +560,7 @@ class CodexCustomAgentDeployment:
             drifted = drifted or any(
                 not resources.get(target)
                 or _hash(resources[target]) != manifest_resources[target]
-                for target in self.resource_targets
+                for target in manifest_resources
             )
         if drifted and not self.force:
             raise DriftError(
@@ -645,7 +646,7 @@ class CodexCustomAgentDeployment:
         merged = self._plan_routing_removal(manifest)
         remove_catalog, remove_pointer = self._legacy_cleanup(manifest, catalog)
 
-        if manifest is None and agent and agent != agent_source and not self.force:
+        if manifest is None and self.target.exists() and agent != agent_source and not self.force:
             raise DriftError(
                 "an unmanaged {} agent already exists; use --force to replace it".format(
                     self.name
@@ -654,17 +655,24 @@ class CodexCustomAgentDeployment:
                 stage=self.name,
                 path=str(self.target),
             )
-        if manifest is None or "resources" not in manifest:
-            for target, content in resources.items():
-                if content and content != resource_sources[target] and not self.force:
-                    raise DriftError(
-                        "an unmanaged {} resource already exists; use --force to replace it".format(
-                            self.name
-                        ),
-                        host="codex",
-                        stage=self.name,
-                        path=str(self.resource_targets[target]),
-                    )
+        owned_resources = {
+            item["target"] for item in (manifest or {}).get("resources", [])
+        }
+        for target, content in resources.items():
+            if (
+                target not in owned_resources
+                and self.resource_targets[target].exists()
+                and content != resource_sources[target]
+                and not self.force
+            ):
+                raise DriftError(
+                    "an unmanaged {} resource already exists; use --force to replace it".format(
+                        self.name
+                    ),
+                    host="codex",
+                    stage=self.name,
+                    path=str(self.resource_targets[target]),
+                )
         next_manifest = {
             "schemaVersion": self.current_schema,
             "component": self.name,
@@ -735,7 +743,10 @@ class CodexCustomAgentDeployment:
                 self._write_routing_removal(transaction, routing)
                 if remove_catalog:
                     transaction.remove(self.catalog_target)
-                transaction.write_json(self.manifest_path, manifest)
+                self.state.put_receipt(
+                    transaction, self.name, manifest, kind="agent",
+                    installer_version=self.version, legacy_path=self.manifest_path,
+                )
                 self._write_config(transaction, config_plan)
                 self.config.verify(config_plan)
                 transaction.commit()
@@ -765,11 +776,11 @@ class CodexCustomAgentDeployment:
             else b""
         )
         resources = {
-            target: self._read_regular(
-                path,
-                label="{} resource {}".format(self.name, target),
+            item["target"]: self._read_regular(
+                self.resource_targets[item["target"]],
+                label="{} resource {}".format(self.name, item["target"]),
             )
-            for target, path in self.resource_targets.items()
+            for item in manifest.get("resources", [])
         }
         self._validate_owned(agent, manifest, catalog, resources)
         merged = self._plan_routing_removal(manifest)
@@ -781,9 +792,8 @@ class CodexCustomAgentDeployment:
                 {}, remove=(("model_catalog_json",),) if remove_pointer else ()
             ),
             tuple(
-                self.resource_targets[target]
-                for target in self.resource_targets
-                if "resources" in manifest
+                self.resource_targets[item["target"]]
+                for item in manifest.get("resources", [])
             ),
         )
 
@@ -808,7 +818,7 @@ class CodexCustomAgentDeployment:
                 self._write_routing_removal(transaction, merged)
                 if remove_catalog:
                     transaction.remove(self.catalog_target)
-                transaction.remove(self.manifest_path)
+                self.state.remove_receipt(transaction, self.name, self.manifest_path)
                 if config_plan.changed:
                     self._write_config(transaction, config_plan)
                     self.config.verify(config_plan)
@@ -976,6 +986,59 @@ class CodexInstaller:
         }
         self.completed = []  # type: List[str]
         self.install_results = {}  # type: Dict[str, Dict[str, Any]]
+        self.state = InstallState(self.codex_home)
+        self._operation_id = None  # type: Optional[str]
+        self._stage = "start"
+
+    @contextlib.contextmanager
+    def _operation(self, action: str, components: Sequence[str] = ()):
+        if self.dry_run or self._operation_id is not None:
+            yield
+            return
+        # Serialize host operations while retaining the existing short file locks
+        # used by component transactions and state updates.
+        with InstallerLock(self.codex_home, name="hk-operation.lock"):
+            self.completed = []
+            self._operation_id = self.state.begin_operation(action, self.version, list(components))
+            print("Installer management record: {}".format(self.state.path))
+            try:
+                yield
+            except BaseException as exc:
+                status = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else (
+                    "partial" if self.completed else "failed"
+                )
+                self.state.finish_operation(
+                    self._operation_id, status, self.completed,
+                    error={"stage": getattr(exc, "stage", None) or self._stage,
+                           "type": type(exc).__name__},
+                )
+                raise
+            else:
+                self.state.finish_operation(self._operation_id, "success", self.completed)
+            finally:
+                self._operation_id = None
+
+    def _set_stage(self, stage: str) -> None:
+        self._stage = stage
+        if self._operation_id is not None:
+            self.state.update_operation(self._operation_id, stage, self.completed)
+
+    def _completed(self, message: str) -> None:
+        self.completed.append(message)
+        self._set_stage(self._stage)
+
+    def _managed_names(self) -> Set[str]:
+        names = {
+            name for name, record in self.state.read()["components"].items()
+            if record["kind"] in ("agent", "template")
+        }
+        if (self.codex_home / GUIDANCE_MANIFEST).exists() or (self.codex_home / GUIDANCE_MANIFEST).is_symlink():
+            names.add("agents-md")
+        for name in self._agent_order():
+            path = self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
+            if path.exists() or path.is_symlink():
+                names.add(name)
+        return names
 
     @property
     def plugin_names(self) -> Set[str]:
@@ -1359,12 +1422,26 @@ class CodexInstaller:
             )
         return info
 
+    def _verify_local_marketplace(self, source: str) -> None:
+        info = self._marketplace_info() or {}
+        registration = info.get("marketplaceSource", {})
+        if (not isinstance(registration, dict) or registration.get("sourceType") != "local"
+                or not isinstance(registration.get("source"), str) or not registration["source"].strip()):
+            raise InstallerError("marketplace did not resolve to a local source", host="codex", stage="marketplace-verify")
+        try:
+            actual = Path(str(registration.get("source", ""))).resolve(strict=True)
+            expected = Path(source).resolve(strict=True)
+        except OSError as exc:
+            raise InstallerError("cannot resolve local marketplace source: {}".format(exc), host="codex", stage="marketplace-verify") from exc
+        if actual != expected:
+            raise InstallerError("marketplace points at a different local source", host="codex", stage="marketplace-verify")
+
     def _ensure_marketplace(self, source: str) -> None:
         info = self._marketplace_info()
         if self.local_source:
             if info is None:
                 self._add_marketplace(source, ref=None, stage="marketplace-add")
-                self.completed.append("added marketplace")
+                self._completed("added marketplace")
                 info = self._marketplace_info()
             if info is None:
                 raise InstallerError(
@@ -1385,17 +1462,24 @@ class CodexInstaller:
                 if isinstance(source_info, dict)
                 else ""
             )
-            try:
-                actual = Path(str(source_value)).resolve(strict=True)
-                expected = Path(source).resolve(strict=True)
-            except OSError as exc:
-                raise InstallerError(
-                    "cannot resolve local marketplace source: {}".format(exc),
-                    host="codex",
-                    stage="marketplace-verify",
-                    path=str(source_value),
-                ) from exc
-            if source_type != "local" or actual != expected:
+            old_ref = None
+            if not isinstance(source_value, str) or not source_value.strip():
+                raise InstallerError("marketplace source is missing", host="codex", stage="marketplace-verify")
+            if source_type == "local":
+                try:
+                    old_source = str(Path(str(source_value)).resolve(strict=True))
+                    expected = str(Path(source).resolve(strict=True))
+                except OSError as exc:
+                    raise InstallerError("cannot resolve local marketplace source: {}".format(exc), host="codex", stage="marketplace-verify", path=str(source_value)) from exc
+                if old_source == expected:
+                    self._verify_local_marketplace(source)
+                    return
+            elif source_type == "git" and source_value == REMOTE_MARKETPLACE_SOURCE:
+                old_source = str(source_value)
+                old_ref = git_commit(Path(str(info.get("root", ""))), "HEAD")
+                if not old_ref:
+                    raise InstallerError("cannot snapshot the existing marketplace revision", host="codex", stage="marketplace-update-preflight")
+            else:
                 raise InstallerError(
                     "marketplace '{}' already points at a different source".format(
                         self.marketplace
@@ -1403,12 +1487,35 @@ class CodexInstaller:
                     host="codex",
                     stage="marketplace-verify",
                 )
+            print("  Marketplace source: {} -> {}".format(old_source, source))
+            removed = False
+            try:
+                run_json(("codex", "plugin", "marketplace", "remove", self.marketplace, "--json"), stage="marketplace-update")
+                removed = True
+                self._add_marketplace(source, ref=None, stage="marketplace-update")
+                self._verify_local_marketplace(source)
+            except InstallerError as original:
+                if not removed:
+                    raise
+                try:
+                    if self._marketplace_info() is not None:
+                        run_json(("codex", "plugin", "marketplace", "remove", self.marketplace, "--json"), stage="marketplace-rollback")
+                    self._add_marketplace(old_source, ref=old_ref, stage="marketplace-rollback")
+                    if old_ref is not None:
+                        self._verify_remote_marketplace(old_ref)
+                    else:
+                        self._verify_local_marketplace(old_source)
+                except InstallerError as rollback_error:
+                    self._completed("marketplace update incomplete")
+                    raise InstallerError("marketplace source update failed and rollback failed: {}; rollback: {}".format(original.render(), rollback_error.render()), host="codex", stage="marketplace-rollback") from rollback_error
+                raise InstallerError("marketplace source update failed; restored previous source: {}".format(original.render()), host="codex", stage="marketplace-update") from original
+            self._completed("updated marketplace source to {}".format(source))
             return
 
         target_ref = "v{}".format(self.version)
         if info is None:
             self._add_marketplace(source, ref=target_ref, stage="marketplace-add")
-            self.completed.append("added marketplace")
+            self._completed("added marketplace")
             added = self._marketplace_info()
             if added is None:
                 raise InstallerError(
@@ -1528,7 +1635,7 @@ class CodexInstaller:
                 )
                 self._verify_remote_marketplace(old_commit)
             except InstallerError as rollback_error:
-                self.completed.append("marketplace update incomplete")
+                self._completed("marketplace update incomplete")
                 raise InstallerError(
                     "marketplace update failed and rollback failed: {}; rollback: {}".format(
                         original.render(), rollback_error.render()
@@ -1545,7 +1652,7 @@ class CodexInstaller:
                 path=str(old_root),
             ) from original
 
-        self.completed.append("updated marketplace to {}".format(target_ref))
+        self._completed("updated marketplace to {}".format(target_ref))
         print("  [ok] marketplace {} -> {}".format(self.marketplace, target_ref))
 
     def _deploy_plugins(self, components: Sequence[str]) -> None:
@@ -1564,10 +1671,14 @@ class CodexInstaller:
                 print("  [dry-run] plugin add {}@{}".format(component, self.marketplace))
             return
 
+        self._set_stage("marketplace")
         self._ensure_marketplace(source)
 
         for component in components:
+            self._set_stage("install:" + component)
             self.install_results[component] = self._install_plugin(component)
+            self._completed("installed {}".format(component))
+            self.state.set_plugin(component, str(self.install_results[component]["version"]), self.version)
             print("  [ok] {}@{}".format(component, self.marketplace))
 
     def current_components(self) -> Set[str]:
@@ -1599,15 +1710,28 @@ class CodexInstaller:
                 and version.strip()
             ):
                 versions[canonical] = version.strip()
-        if (self.codex_home / GUIDANCE_MANIFEST).is_file():
-            names.add("agents-md")
-        for name in self._agent_order():
-            manifest = self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            if manifest.exists() or manifest.is_symlink():
-                names.add(name)
+        names.update(self._managed_names())
         return names, versions
 
+    def _reconcile_plugin_records(self) -> None:
+        """Forget receipts for plugins removed outside this installer.
+
+        Native inventory is authoritative; a record never authorizes removing
+        a plugin that the CLI did not report as managed by this marketplace.
+        """
+        if self.dry_run:
+            return
+        actual = {str(plugin["name"]) for plugin in self._plugins()}
+        actual.update(self.aliases.get(name, name) for name in tuple(actual))
+        stale = [name for name, record in self.state.read()["components"].items()
+                 if record["kind"] == "plugin" and name not in actual]
+        for name in stale:
+            self._set_stage("reconcile:" + name)
+            self.state.remove_plugin(name)
+            self._completed("removed stale plugin record {}".format(name))
+
     def _remove_plugin(self, plugin: Mapping[str, Any], *, stage: str) -> None:
+        self._set_stage(stage + ":" + str(plugin.get("name", "plugin")))
         plugin_id = str(plugin.get("pluginId", ""))
         if not plugin_id:
             raise InstallerError(
@@ -1622,7 +1746,9 @@ class CodexInstaller:
                 ("codex", "plugin", "remove", plugin_id, "--json"),
                 stage=stage,
             )
-        self.completed.append("removed {}".format(plugin_id))
+        self._completed("removed {}".format(plugin_id))
+        if not self.dry_run:
+            self.state.remove_plugin(str(plugin["name"]))
 
     def _remove_marketplace(self) -> None:
         if self.dry_run:
@@ -1641,33 +1767,65 @@ class CodexInstaller:
             ("codex", "plugin", "marketplace", "remove", self.marketplace, "--json"),
             stage="marketplace-remove",
         )
-        self.completed.append("removed marketplace")
+        self._completed("removed marketplace")
+
+    def _preflight(
+        self,
+        components: Sequence[str] = (),
+        *,
+        include_template: bool = True,
+        reset_template: bool = False,
+    ) -> None:
+        """Validate local operations before any plugin mutation.
+
+        Recover pending file transactions first. Each deployment revalidates
+        under its own lock when applying; this is not a host-wide transaction.
+        """
+        desired = set(components)
+        with installer_state(self.codex_home, dry_run=self.dry_run):
+            for name in self._agent_order():
+                agent = self._custom_agent(name, enabled=name in desired)
+                if name in desired:
+                    agent._plan_deploy()
+                else:
+                    agent._plan_uninstall()
+            if include_template:
+                guidance = CodexGuidanceDeployment(
+                    self.repo_root / "templates" / "AGENTS.md",
+                    self.codex_home,
+                    self.version,
+                    enabled="agents-md" in desired,
+                    dry_run=self.dry_run,
+                    force=self.force,
+                )
+                if "agents-md" in desired:
+                    if reset_template:
+                        guidance._plan_uninstall()
+                    guidance._plan_deploy()
+                else:
+                    guidance._plan_uninstall()
 
     def reset(self, *, include_template: bool) -> None:
+        with self._operation("reset"):
+            self._reset(include_template=include_template)
+
+    def _reset(self, *, include_template: bool) -> None:
         self._require_cli()
+        self._set_stage("preflight")
+        self._preflight(include_template=include_template)
         print("Resetting Codex:")
         for plugin in self._plugins():
             self._remove_plugin(plugin, stage="reset")
         self._remove_marketplace()
-        existing_agents = {
-            name
-            for name in self._agent_order()
-            if (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).exists()
-            or (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).is_symlink()
-        }
+        existing_agents = self._managed_names()
         for name in self._agent_order():
+            self._set_stage("reset:" + name)
             self._custom_agent(name, enabled=False).uninstall()
             if name in existing_agents:
-                self.completed.append("reset {}".format(name))
+                self._completed("reset {}".format(name))
         if include_template:
-            guidance_existed = (
-                (self.codex_home / GUIDANCE_MANIFEST).exists()
-                or (self.codex_home / GUIDANCE_MANIFEST).is_symlink()
-            )
+            guidance_existed = "agents-md" in existing_agents
+            self._set_stage("reset:agents-md")
             CodexGuidanceDeployment(
                 self.repo_root / "templates" / "AGENTS.md",
                 self.codex_home,
@@ -1677,7 +1835,8 @@ class CodexInstaller:
                 force=self.force,
             ).uninstall()
             if guidance_existed:
-                self.completed.append("reset agents-md")
+                self._completed("reset agents-md")
+        self._reconcile_plugin_records()
 
     def install(
         self,
@@ -1686,31 +1845,30 @@ class CodexInstaller:
         reset: bool = False,
         include_template: bool = False,
     ) -> None:
+        with self._operation("reset" if reset else "install", components):
+            self._install(components, reset=reset, include_template=include_template)
+
+    def _install(
+        self,
+        components: Sequence[str],
+        *,
+        reset: bool,
+        include_template: bool,
+    ) -> None:
         self._require_cli()
+        self._set_stage("preflight")
+        self._preflight(components, reset_template=reset and include_template)
         desired = set(components)
         desired_plugins = sorted(desired & self.plugin_names)
         desired_agents = [
             name for name in self._agent_order() if name in desired
         ]
-        guidance_existed = (
-            (self.codex_home / GUIDANCE_MANIFEST).exists()
-            or (self.codex_home / GUIDANCE_MANIFEST).is_symlink()
-        )
-        existing_agents = {
-            name
-            for name in self._agent_order()
-            if (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).exists()
-            or (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).is_symlink()
-        }
+        existing_agents = self._managed_names()
+        guidance_existed = "agents-md" in existing_agents
         if reset:
             self.reset(include_template=include_template)
 
         self._deploy_plugins(desired_plugins)
-        self.completed.extend("installed {}".format(name) for name in desired_plugins)
 
         # Add canonical plugins first. Only after they succeed is it safe to
         # remove omitted components and declared aliases.
@@ -1720,6 +1878,7 @@ class CodexInstaller:
             if canonical not in desired_plugins or name in self.aliases:
                 self._remove_plugin(plugin, stage="desired-state-remove")
 
+        self._set_stage("guidance")
         CodexGuidanceDeployment(
             self.repo_root / "templates" / "AGENTS.md",
             self.codex_home,
@@ -1729,24 +1888,28 @@ class CodexInstaller:
             force=self.force,
         ).deploy()
         if "agents-md" in desired:
-            self.completed.append("installed agents-md")
+            self._completed("installed agents-md")
         elif guidance_existed:
-            self.completed.append("removed agents-md")
+            self._completed("removed agents-md")
         # Install every desired custom agent before removing excluded agents.
         # Each deployment owns its own transaction, so a later agent failure
         # does not roll back an earlier successful component.
         for name in desired_agents:
+            self._set_stage("install:" + name)
             self._custom_agent(name, enabled=True).deploy()
-            self.completed.append("installed {}".format(name))
+            self._completed("installed {}".format(name))
         for name in self._agent_order():
             if name in desired:
                 continue
+            self._set_stage("remove:" + name)
             self._custom_agent(name, enabled=False).uninstall()
             if name in existing_agents:
-                self.completed.append("removed {}".format(name))
+                self._completed("removed {}".format(name))
         # Component selection does not own the user's execution policy.
         if not self.dry_run:
+            self._set_stage("verify")
             self.verify(desired)
+            self._reconcile_plugin_records()
 
     def verify(self, desired: Set[str]) -> None:
         actual_plugins = {
@@ -1755,14 +1918,9 @@ class CodexInstaller:
             if str(plugin["name"]) in self.plugin_names
         }
         expected_plugins = desired & self.plugin_names
-        guidance = (self.codex_home / GUIDANCE_MANIFEST).is_file()
-        installed_agents = {
-            name
-            for name in self._agent_order()
-            if (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).is_file()
-        }
+        managed = self._managed_names()
+        guidance = "agents-md" in managed
+        installed_agents = managed & set(self._agent_order())
         expected_agents = desired & self.agent_names
         if (
             set(actual_plugins) != expected_plugins
@@ -1795,23 +1953,18 @@ class CodexInstaller:
                 self._custom_agent(name, enabled=True).verify()
 
     def uninstall(self) -> None:
+        with self._operation("uninstall"):
+            self._uninstall()
+
+    def _uninstall(self) -> None:
         self._require_cli()
+        self._set_stage("preflight")
+        self._preflight()
         for plugin in self._plugins():
             self._remove_plugin(plugin, stage="uninstall")
-        guidance_existed = (
-            (self.codex_home / GUIDANCE_MANIFEST).exists()
-            or (self.codex_home / GUIDANCE_MANIFEST).is_symlink()
-        )
-        existing_agents = {
-            name
-            for name in self._agent_order()
-            if (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).exists()
-            or (
-                self.codex_home / ".hukuhaka-{}-manifest.json".format(name)
-            ).is_symlink()
-        }
+        existing_agents = self._managed_names()
+        guidance_existed = "agents-md" in existing_agents
+        self._set_stage("remove:agents-md")
         CodexGuidanceDeployment(
             self.repo_root / "templates" / "AGENTS.md",
             self.codex_home,
@@ -1821,14 +1974,16 @@ class CodexInstaller:
             force=self.force,
         ).uninstall()
         if guidance_existed:
-            self.completed.append("removed agents-md")
+            self._completed("removed agents-md")
         for name in self._agent_order():
+            self._set_stage("remove:" + name)
             self._custom_agent(name, enabled=False).uninstall()
             if name in existing_agents:
-                self.completed.append("removed {}".format(name))
+                self._completed("removed {}".format(name))
         if not self.dry_run and self.current_components():
             raise InstallerError(
                 "Codex uninstall left managed components behind",
                 host="codex",
                 stage="verify",
             )
+        self._reconcile_plugin_records()

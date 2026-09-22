@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from unittest import mock
 
 from scripts.install.codex import REMOTE_MARKETPLACE_SOURCE, CodexInstaller
-from scripts.install.common import DriftError, InstallerError
+from scripts.install.common import DriftError, InstallerError, InstallerLock, StateError
+from scripts.install.state import InstallState, encode_state
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -187,6 +188,35 @@ class CodexLifecycleTests(unittest.TestCase):
             local_source=local_source,
         )
 
+    def test_native_removal_is_reconciled_without_treating_receipt_as_installed(self) -> None:
+        state = InstallState(self.codex_home)
+        for action in ("install", "reset", "uninstall"):
+            with self.subTest(action=action):
+                state.set_plugin("hukuhaka-worklog", "0.5.0", "1.2.3")
+                installer = self.installer()
+                before = state.path.read_bytes()
+                self.assertEqual(set(), installer.current_components())
+                self.assertEqual(before, state.path.read_bytes())
+                installer.dry_run = True
+                if action == "install":
+                    installer.install([])
+                elif action == "reset":
+                    installer.reset(include_template=True)
+                else:
+                    installer.uninstall()
+                self.assertEqual(before, state.path.read_bytes())
+                installer.dry_run = False
+                self.fake.calls.clear()
+                if action == "install":
+                    installer.install([])
+                elif action == "reset":
+                    installer.reset(include_template=True)
+                else:
+                    installer.uninstall()
+                self.assertNotIn("hukuhaka-worklog", state.read()["components"])
+                self.assertEqual("success", state.read()["operations"][-1]["status"])
+                self.assertFalse(any(c[1:3] == ("plugin", "remove") for c in self.fake.calls))
+
     def test_exact_desired_state_adds_canonical_before_removing_alias_and_omitted(self) -> None:
         self.fake.installed("old-report-planner")
         self.fake.installed("hukuhaka-engineering-plan")
@@ -248,7 +278,7 @@ class CodexLifecycleTests(unittest.TestCase):
         manifest_path = (
             self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
         )
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = self.receipt()
         self.assertEqual(4, manifest["schemaVersion"])
         self.assertEqual(
             ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
@@ -289,10 +319,14 @@ class CodexLifecycleTests(unittest.TestCase):
         (self.codex_home / "AGENTS.md").write_bytes(block + b"\n")
         manifest.update({"routingTarget": "AGENTS.md", "routingHash": hashlib.sha256(block).hexdigest(),
                          "prefix": "", "suffix": "\n"})
+        store = InstallState(self.codex_home)
+        state = store.read()
+        del state["components"]["project-doc-reader"]
+        store.path.write_bytes(encode_state(state))
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
             self.installer().install(["project-doc-reader"])
-        upgraded = json.loads(manifest_path.read_text(encoding="utf-8"))
+        upgraded = self.receipt()
         self.assertEqual(4, upgraded["schemaVersion"])
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
 
@@ -315,6 +349,7 @@ class CodexLifecycleTests(unittest.TestCase):
             forced._custom_agent("project-doc-reader", enabled=False).uninstall()
         self.assertFalse(helper.exists())
         self.assertFalse(manifest_path.exists())
+        self.assertIsNone(self.receipt())
         for resource in reader["resources"]:
             self.assertFalse((self.codex_home / resource["target"]).exists())
 
@@ -333,6 +368,7 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertFalse(helper.exists())
         self.assertFalse(agent.exists())
         self.assertFalse(manifest.exists())
+        self.assertIsNone(self.receipt())
 
         self.catalog = json.loads(
             (ROOT / "components.json").read_text(encoding="utf-8")
@@ -345,6 +381,7 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertFalse(helper.exists())
         self.assertFalse(agent.exists())
         self.assertFalse(manifest.exists())
+        self.assertIsNone(self.receipt())
 
     def test_reader_resource_symlink_is_rejected(self) -> None:
         with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
@@ -356,26 +393,167 @@ class CodexLifecycleTests(unittest.TestCase):
             self.installer().install(["project-doc-reader"])
 
     def test_later_agent_failure_preserves_earlier_success_for_partial_result(self) -> None:
-        reader = next(
-            item
-            for item in self.catalog["components"]
-            if item.get("name") == "project-doc-reader"
-        )
-        reader["path"] = "agents/missing-project-doc-reader.toml"
         installer = self.installer()
 
         with mock.patch(
-            "scripts.install.codex_config.CodexConfigEditor._doctor"
-        ), self.assertRaisesRegex(InstallerError, "source is missing"):
+            "scripts.install.codex_config.CodexConfigEditor.verify",
+            side_effect=[None, InstallerError("injected second agent validation failure")],
+        ), self.assertRaisesRegex(InstallerError, "second agent validation failure"):
             installer.install(["astra_worker", "project-doc-reader"])
 
         self.assertEqual(["installed astra_worker"], installer.completed)
         self.assertTrue(
-            (self.codex_home / ".hukuhaka-astra_worker-manifest.json").is_file()
+            self.receipt("astra_worker") is not None
         )
         self.assertFalse(
             (self.codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
         )
+        state = installer.state.read()
+        operation = state["operations"][-1]
+        self.assertEqual("partial", operation["status"])
+        self.assertEqual("install:project-doc-reader", operation["error"]["stage"])
+        self.assertEqual({"astra_worker"}, set(state["components"]))
+
+    def test_interrupted_operation_is_retained_and_nested_reset_is_one_attempt(self) -> None:
+        state = InstallState(self.codex_home)
+        interrupted = state.begin_operation("install", "1.2.0", ["project-doc-reader"])
+        self.installer().install(["agents-md"], reset=True, include_template=True)
+        operations = state.read()["operations"]
+        self.assertEqual(2, len(operations))
+        self.assertEqual(interrupted, operations[0]["id"])
+        self.assertEqual("interrupted", operations[0]["status"])
+        self.assertEqual("1.2.0", operations[0]["installer_version"])
+        self.assertEqual("reset", operations[1]["action"])
+        self.assertEqual(["agents-md"], operations[1]["requested"])
+        self.assertEqual("success", operations[1]["status"])
+
+    def test_concurrent_host_operation_cannot_mark_running_attempt_interrupted(self) -> None:
+        state = InstallState(self.codex_home)
+        with InstallerLock(self.codex_home, name="hk-operation.lock"):
+            active = state.begin_operation("install", "1.2.0", ["agents-md"])
+            before = state.path.read_bytes()
+            with self.assertRaisesRegex(InstallerError, "already running"):
+                self.installer().install(["agents-md"])
+            self.assertEqual(before, state.path.read_bytes())
+            self.assertEqual("running", state.read()["operations"][-1]["status"])
+            self.assertEqual(active, state.read()["operations"][-1]["id"])
+
+    def receipt(self, name="project-doc-reader"):
+        return InstallState(self.codex_home).read()["components"].get(name, {}).get("receipt")
+
+    def seed_released_reader(self) -> Path:
+        fixture = ROOT / "scripts/tests/fixtures/installer-v1.2.0-reader/codex-home"
+        shutil.copytree(fixture, self.codex_home, dirs_exist_ok=True)
+        return self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
+
+    def test_released_reader_upgrade_repeat_and_owned_removal(self) -> None:
+        manifest_path = self.seed_released_reader()
+        self.assertEqual(1, len(json.loads(manifest_path.read_text())["resources"]))
+        self.installer().install(["project-doc-reader"])
+        upgraded = self.receipt()
+        self.assertFalse(manifest_path.exists())
+        self.assertEqual(4, len(upgraded["resources"]))
+        before = {p: p.read_bytes() for p in (self.codex_home / "agents").rglob("*") if p.is_file()}
+        self.installer().install(["project-doc-reader"])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        sentinel = self.codex_home / "agents/personal.toml"
+        sentinel.write_bytes(b"personal\n")
+        self.installer().install([])
+        self.assertFalse(manifest_path.exists())
+        self.assertIsNone(self.receipt())
+        self.assertEqual(b"personal\n", sentinel.read_bytes())
+        for entry in upgraded["resources"]:
+            self.assertFalse((self.codex_home / entry["target"]).exists())
+
+    def test_released_reader_deselection_preserves_unowned_new_resource(self) -> None:
+        manifest_path = self.seed_released_reader()
+        unowned = self.codex_home / "agents/project-doc-reader-protocol.py"
+        unowned.write_bytes(b"personal helper\n")
+        self.installer().install([])
+        self.assertFalse(manifest_path.exists())
+        self.assertIsNone(self.receipt())
+        self.assertFalse((self.codex_home / "agents/project-doc-reader-tool.py").exists())
+        self.assertEqual(b"personal helper\n", unowned.read_bytes())
+
+    def test_upgrade_resource_conflict_fails_before_plugin_mutation(self) -> None:
+        manifest = self.seed_released_reader()
+        unowned = self.codex_home / "agents/project-doc-reader-protocol.py"
+        before = manifest.read_bytes()
+        self.fake.installed("hukuhaka-worklog")
+        for content in (b"personal helper\n", b""):
+            with self.subTest(content=content):
+                unowned.write_bytes(content)
+                with self.assertRaisesRegex(DriftError, "unmanaged.*resource"):
+                    self.installer().install(["hukuhaka-engineering-plan", "project-doc-reader"])
+                self.assertEqual(["hukuhaka-worklog"], [p["name"] for p in self.fake.plugins])
+                self.assertFalse(any(c[1:3] in (("plugin", "add"), ("plugin", "remove")) for c in self.fake.calls))
+                self.assertEqual(before, manifest.read_bytes())
+                self.assertEqual(content, unowned.read_bytes())
+
+    def test_resource_manifest_rejects_duplicate_and_unknown_owned_paths(self) -> None:
+        manifest_path = self.seed_released_reader()
+        original = json.loads(manifest_path.read_text())
+        recorded = original["resources"][0]
+        for resources in (
+            [recorded, recorded],
+            [{"target": "agents/personal.toml", "hash": recorded["hash"]}],
+            [{"target": "../outside.py", "hash": recorded["hash"]}],
+        ):
+            with self.subTest(resources=resources):
+                manifest_path.write_text(json.dumps(dict(original, resources=resources)))
+                before = manifest_path.read_bytes()
+                with self.assertRaisesRegex(StateError, "invalid project-doc-reader manifest"):
+                    self.installer().install([])
+                self.assertEqual(before, manifest_path.read_bytes())
+                self.assertTrue((self.codex_home / "agents/project-doc-reader-tool.py").is_file())
+
+    def test_reset_and_uninstall_preflight_preserve_state_then_retry(self) -> None:
+        for action in ("install", "reset", "uninstall"):
+            with self.subTest(action=action):
+                manifest = self.seed_released_reader()
+                original = manifest.read_bytes()
+                manifest.write_text("{}")
+                self.fake.plugins = []
+                self.fake.installed("hukuhaka-worklog")
+                self.fake.marketplace = True
+                self.fake.calls.clear()
+                installer = self.installer()
+                def apply():
+                    if action == "install":
+                        installer.install(["hukuhaka-engineering-plan"], reset=True)
+                    elif action == "reset":
+                        installer.reset(include_template=True)
+                    else:
+                        installer.uninstall()
+                with self.assertRaisesRegex(StateError, "invalid project-doc-reader manifest"):
+                    apply()
+                self.assertEqual(["hukuhaka-worklog"], [p["name"] for p in self.fake.plugins])
+                self.assertTrue(self.fake.marketplace)
+                self.assertEqual([], installer.completed)
+                self.assertEqual("failed", InstallState(self.codex_home).read()["operations"][-1]["status"])
+                self.assertEqual("{}", manifest.read_text())
+                self.assertFalse(any(c[1:3] in (("plugin", "remove"), ("plugin", "add")) or c[1:4] == ("plugin", "marketplace", "remove") for c in self.fake.calls))
+                manifest.write_bytes(original)
+                apply()
+                self.assertFalse(manifest.exists())
+                self.assertIsNone(self.receipt())
+                expected = ["hukuhaka-engineering-plan"] if action == "install" else []
+                self.assertEqual(expected, [p["name"] for p in self.fake.plugins])
+
+    def test_missing_guidance_is_restored_and_invalid_guidance_prevents_plugin_changes(self) -> None:
+        self.installer().install(["agents-md"])
+        guidance = self.codex_home / "AGENTS.md"
+        guidance.write_bytes(b"# Personal guidance\n")
+        self.installer().install(["agents-md", "hukuhaka-worklog"])
+        self.assertTrue(guidance.read_bytes().startswith(b"# Personal guidance\n"))
+        guidance.write_bytes(b"# Personal guidance\n<!-- hukuhaka-harness:begin -->\n")
+        before = guidance.read_bytes()
+        self.fake.calls.clear()
+        with self.assertRaises(StateError):
+            self.installer().install(["agents-md", "hukuhaka-engineering-plan"], reset=True, include_template=True)
+        self.assertEqual(before, guidance.read_bytes())
+        self.assertEqual(["hukuhaka-worklog"], [p["name"] for p in self.fake.plugins])
+        self.assertFalse(any(c[1:3] in (("plugin", "add"), ("plugin", "remove")) for c in self.fake.calls))
 
     def test_remote_marketplace_is_pinned_to_the_resolved_release(self) -> None:
         with mock.patch("scripts.install.codex.git_commit", return_value="target"):
@@ -387,6 +565,158 @@ class CodexLifecycleTests(unittest.TestCase):
             if command[1:4] == ("plugin", "marketplace", "add")
         )
         self.assertEqual(("--ref", "v1.2.3"), add[-3:-1])
+
+    def test_local_clone_replaces_official_remote_before_plugin_install(self) -> None:
+        self.fake.remote_marketplace("old-commit")
+        with mock.patch(
+            "scripts.install.codex.git_commit", side_effect=self.fake.git_commit
+        ):
+            self.installer().install(["hukuhaka-worklog"])
+
+        self.assertEqual("local", self.fake.marketplace_source_type)
+        self.assertEqual(str(ROOT), self.fake.marketplace_source)
+        mutations = [
+            command[1:4]
+            for command in self.fake.calls
+            if command[1:4] in (
+                ("plugin", "marketplace", "remove"),
+                ("plugin", "marketplace", "add"),
+            ) or command[1:3] == ("plugin", "add")
+        ]
+        self.assertEqual([
+            ("plugin", "marketplace", "remove"),
+            ("plugin", "marketplace", "add"),
+            ("plugin", "add", "hukuhaka-worklog@hukuhaka-harness"),
+        ], mutations)
+        self.assertEqual("success", InstallState(self.codex_home).read()["operations"][-1]["status"])
+
+    def test_local_clone_replaces_another_local_checkout(self) -> None:
+        old_root = Path(self.temp.name) / "old clone"
+        manifest = old_root / ".agents/plugins/marketplace.json"
+        manifest.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / ".agents/plugins/marketplace.json", manifest)
+        self.fake.marketplace = True
+        self.fake.marketplace_source_type = "local"
+        self.fake.marketplace_source = str(old_root)
+        self.fake.marketplace_root = str(old_root)
+
+        self.installer().install(["hukuhaka-worklog"])
+
+        self.assertEqual(str(ROOT), self.fake.marketplace_source)
+        self.assertTrue(manifest.is_file())
+        self.assertEqual(["hukuhaka-worklog"], [p["name"] for p in self.fake.plugins])
+
+    def test_local_clone_reuses_same_local_checkout_without_registration_mutation(self) -> None:
+        self.fake.marketplace = True
+        self.fake.marketplace_source_type = "local"
+        self.fake.marketplace_source = str(ROOT)
+        self.fake.marketplace_root = str(ROOT)
+
+        self.installer().install(["hukuhaka-worklog"])
+
+        self.assertFalse(any(
+            command[1:4] in (
+                ("plugin", "marketplace", "remove"),
+                ("plugin", "marketplace", "add"),
+            ) for command in self.fake.calls
+        ))
+        self.assertEqual(["hukuhaka-worklog"], [p["name"] for p in self.fake.plugins])
+
+    def test_local_clone_preserves_foreign_remote(self) -> None:
+        self.fake.remote_marketplace("foreign-commit")
+        self.fake.marketplace_source = "https://github.com/example/fork.git"
+
+        with self.assertRaisesRegex(InstallerError, "different source"):
+            self.installer().install(["hukuhaka-worklog"])
+
+        self.assertTrue(self.fake.marketplace)
+        self.assertEqual("https://github.com/example/fork.git", self.fake.marketplace_source)
+        self.assertEqual("foreign-commit", self.fake.marketplace_commit)
+        self.assertFalse(any(
+            command[1:4] in (
+                ("plugin", "marketplace", "remove"),
+                ("plugin", "marketplace", "add"),
+            ) or command[1:3] == ("plugin", "add")
+            for command in self.fake.calls
+        ))
+
+    def test_failed_local_clone_registration_restores_exact_remote_head(self) -> None:
+        self.fake.remote_marketplace("old-commit")
+        self.fake.fail_marketplace_refs.add("")
+        installer = self.installer()
+        with mock.patch(
+            "scripts.install.codex.git_commit", side_effect=self.fake.git_commit
+        ):
+            with self.assertRaisesRegex(InstallerError, "restored previous"):
+                installer.install(["hukuhaka-worklog"])
+
+        self.assertTrue(self.fake.marketplace)
+        self.assertEqual("git", self.fake.marketplace_source_type)
+        self.assertEqual(REMOTE_MARKETPLACE_SOURCE, self.fake.marketplace_source)
+        self.assertEqual("old-commit", self.fake.marketplace_commit)
+        self.assertEqual([], self.fake.plugins)
+        self.assertEqual([], installer.completed)
+        operation = InstallState(self.codex_home).read()["operations"][-1]
+        self.assertEqual("failed", operation["status"])
+
+    def test_local_clone_rollback_failure_records_partial_operation(self) -> None:
+        self.fake.remote_marketplace("old-commit")
+        self.fake.fail_marketplace_refs.update(("", "old-commit"))
+        installer = self.installer()
+        with mock.patch(
+            "scripts.install.codex.git_commit", side_effect=self.fake.git_commit
+        ):
+            with self.assertRaisesRegex(InstallerError, "rollback failed"):
+                installer.install(["hukuhaka-worklog"])
+
+        self.assertFalse(self.fake.marketplace)
+        self.assertEqual([], self.fake.plugins)
+        self.assertTrue(installer.completed)
+        operation = InstallState(self.codex_home).read()["operations"][-1]
+        self.assertEqual("partial", operation["status"])
+
+    def test_failed_local_clone_registration_restores_old_local_checkout(self) -> None:
+        old_root = Path(self.temp.name) / "old clone"
+        old_root.mkdir()
+        self.fake.marketplace = True
+        self.fake.marketplace_source_type = "local"
+        self.fake.marketplace_source = str(old_root)
+        self.fake.marketplace_root = str(old_root)
+
+        def fail_target(command: Sequence[str], *, stage: str) -> Dict[str, Any]:
+            if tuple(command[1:5]) == ("plugin", "marketplace", "add", str(ROOT)):
+                self.fake.calls.append(tuple(command))
+                raise InstallerError("injected target checkout registration failure")
+            return self.fake.run_json(command, stage=stage)
+
+        with mock.patch("scripts.install.codex.run_json", side_effect=fail_target):
+            with self.assertRaisesRegex(InstallerError, "restored previous source"):
+                self.installer().install(["hukuhaka-worklog"])
+
+        self.assertTrue(self.fake.marketplace)
+        self.assertEqual("local", self.fake.marketplace_source_type)
+        self.assertEqual(old_root.resolve(), Path(self.fake.marketplace_source).resolve())
+        self.assertFalse(any(command[1:3] == ("plugin", "add") for command in self.fake.calls))
+        self.assertEqual("failed", InstallState(self.codex_home).read()["operations"][-1]["status"])
+
+    def test_local_clone_rejects_empty_registered_source_without_mutation(self) -> None:
+        self.fake.marketplace = True
+        self.fake.marketplace_source_type = "local"
+        self.fake.marketplace_source = ""
+        self.fake.marketplace_root = str(ROOT)
+
+        with self.assertRaisesRegex(InstallerError, "source is missing"):
+            self.installer().install(["hukuhaka-worklog"])
+
+        self.assertTrue(self.fake.marketplace)
+        self.assertEqual("", self.fake.marketplace_source)
+        self.assertFalse(any(
+            command[1:4] in (
+                ("plugin", "marketplace", "remove"),
+                ("plugin", "marketplace", "add"),
+            ) or command[1:3] == ("plugin", "add")
+            for command in self.fake.calls
+        ))
 
     def test_remote_marketplace_old_ref_is_replaced_before_plugin_install(self) -> None:
         self.fake.remote_marketplace("old-commit")

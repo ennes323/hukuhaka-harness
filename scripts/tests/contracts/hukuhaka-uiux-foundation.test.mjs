@@ -12,7 +12,7 @@ function read(relativePath) {
   return fs.readFileSync(path.join(SKILL_ROOT, relativePath), "utf8");
 }
 
-test("natural frontend and UIUX intent selects a bounded portable Skill", () => {
+test("Skill metadata declares frontend and UIUX selection scope and portability", () => {
   const skill = read("SKILL.md");
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
   const metadata = read("agents/openai.yaml");
@@ -31,7 +31,7 @@ test("natural frontend and UIUX intent selects a bounded portable Skill", () => 
   assert.doesNotMatch(skill, /\$\{CLAUDE_PLUGIN_ROOT\}|!`|allowed-tools:/);
 });
 
-test("the lean entrypoint routes only applicable detail", () => {
+test("Skill instructions reference applicable detail and constrain scope", () => {
   const skill = read("SKILL.md");
   const routed = [
     "foundations.md",
@@ -49,7 +49,7 @@ test("the lean entrypoint routes only applicable detail", () => {
   assert.match(skill, /Do not create `DESIGN\.md`, a token file, or a component kit by default/);
 });
 
-test("foundations prompt for complete decisions without fixed style values", () => {
+test("foundation instructions list decision areas without fixed style values", () => {
   const foundations = read("references/foundations.md");
   for (const heading of [
     "Visual direction",
@@ -69,7 +69,7 @@ test("foundations prompt for complete decisions without fixed style values", () 
   assert.doesNotMatch(foundations, /#[0-9A-Fa-f]{6}|\b(?:8|12|16|24|32)px\b/);
 });
 
-test("application and synchronization preserve decision ownership", () => {
+test("application and synchronization instructions state decision ownership", () => {
   const skill = read("SKILL.md");
   const application = read("references/application.md");
   const synchronization = read("references/synchronization.md");
@@ -92,7 +92,7 @@ test("application and synchronization preserve decision ownership", () => {
   assert.match(synchronization, /Do not average conflicting values/);
 });
 
-test("verification requires rendered evidence without overstating coverage", () => {
+test("verification instructions require rendered evidence and bounded claims", () => {
   const verification = read("references/verification.md");
 
   assert.match(verification, /A successful build is not proof/);
