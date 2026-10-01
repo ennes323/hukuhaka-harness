@@ -1,0 +1,9 @@
+{
+  "name": "scouter",
+  "provider": "codex",
+  "model": "gpt-6-luna",
+  "modeId": "auto-review",
+  "thinkingOptionId": "xhigh",
+  "featureValues": {"fast_mode": true},
+  "notes": "Use for repository, documentation, dependency, and log exploration when the main agent needs concise source-backed findings and relevant locations."
+}

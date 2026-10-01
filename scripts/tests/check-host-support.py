@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the declared Codex component boundaries."""
+"""Validate the declared native-host component boundaries."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ WORKLOG = ROOT / "marketplace" / "hukuhaka-worklog"
 MEMORY_AUDIT = ROOT / "marketplace" / "hukuhaka-memory-audit"
 PROJECT_DOCS = ROOT / "marketplace" / "hukuhaka-project-docs"
 UIUX_FOUNDATION = ROOT / "marketplace" / "hukuhaka-uiux-foundation"
+PASEO = ROOT / "marketplace" / "hukuhaka-paseo"
 CATALOG = ROOT / "components.json"
 CODEX_MANIFEST = PLANNER / ".codex-plugin" / "plugin.json"
 WORKLOG_CODEX_MANIFEST = WORKLOG / ".codex-plugin" / "plugin.json"
@@ -24,11 +25,11 @@ SKILL = PLANNER / "skills" / "hukuhaka-report-planner" / "SKILL.md"
 WORKLOG_SKILL = WORKLOG / "skills" / "worklog" / "SKILL.md"
 WORKLOG_OPENAI = WORKLOG / "skills" / "worklog" / "agents" / "openai.yaml"
 WORKLOG_SCRIPT = WORKLOG / "skills" / "worklog" / "scripts" / "worklog.py"
-WORKLOG_HOOKS = WORKLOG / "hooks" / "hooks.json"
+WORKLOG_HOOKS = WORKLOG / "hooks" / "codex.json"
 MEMORY_AUDIT_MANIFEST = MEMORY_AUDIT / ".codex-plugin" / "plugin.json"
-MEMORY_AUDIT_SKILL = MEMORY_AUDIT / "skills" / "codex-memory-audit" / "SKILL.md"
-MEMORY_AUDIT_OPENAI = MEMORY_AUDIT / "skills" / "codex-memory-audit" / "agents" / "openai.yaml"
-MEMORY_AUDIT_HOOKS = MEMORY_AUDIT / "hooks" / "hooks.json"
+MEMORY_AUDIT_SKILL = MEMORY_AUDIT / "skills" / "memory-audit" / "SKILL.md"
+MEMORY_AUDIT_OPENAI = MEMORY_AUDIT / "skills" / "memory-audit" / "agents" / "openai.yaml"
+MEMORY_AUDIT_HOOKS = MEMORY_AUDIT / "hooks" / "codex.json"
 MEMORY_AUDIT_SCRIPT = MEMORY_AUDIT / "scripts" / "memory_pressure_hook.py"
 PROJECT_DOCS_MANIFEST = PROJECT_DOCS / ".codex-plugin" / "plugin.json"
 PROJECT_DOCS_SKILL = PROJECT_DOCS / "skills" / "project-docs" / "SKILL.md"
@@ -43,7 +44,6 @@ PLAN_COMPATIBILITY = PLANNER / "skills" / "hukuhaka-report-planner" / "reference
 AGENTS_TEMPLATE = ROOT / "templates" / "AGENTS.md"
 ASTRA_WORKER = ROOT / "agents" / "astra_worker.toml"
 EVIDENCE_SCOUT = ROOT / "agents" / "evidence-scout.toml"
-PROJECT_DOC_READER = ROOT / "agents" / "project-doc-reader.toml"
 
 
 def load_json(path: Path) -> dict:
@@ -90,7 +90,6 @@ def main() -> int:
         AGENTS_TEMPLATE,
         ASTRA_WORKER,
         EVIDENCE_SCOUT,
-        PROJECT_DOC_READER,
     ):
         require(path.is_file(), f"missing required Codex file: {path.relative_to(ROOT)}", errors)
     if errors:
@@ -123,7 +122,6 @@ def main() -> int:
     agents_template = AGENTS_TEMPLATE.read_text(encoding="utf-8")
     astra_worker = ASTRA_WORKER.read_text(encoding="utf-8")
     evidence_scout = EVIDENCE_SCOUT.read_text(encoding="utf-8")
-    project_doc_reader = PROJECT_DOC_READER.read_text(encoding="utf-8")
 
     require(codex.get("name") == "hukuhaka-report-planner",
             "report-planner Codex manifest name differs from its catalog identity", errors)
@@ -134,10 +132,10 @@ def main() -> int:
     require("agents" not in codex, "Codex manifest must not claim unsupported packaged agents", errors)
     require(worklog_codex.get("name") == "hukuhaka-worklog",
             "worklog Codex manifest name differs from its catalog identity", errors)
-    require(worklog_codex.get("version") == "0.5.0",
-            "worklog plugin version must be 0.5.0", errors)
-    require("hooks" not in worklog_codex,
-            "worklog must use Codex's default hooks/hooks.json discovery", errors)
+    require(worklog_codex.get("version") == "0.5.1",
+            "worklog plugin version must be 0.5.1", errors)
+    require(worklog_codex.get("hooks") == "./hooks/codex.json",
+            "worklog must explicitly select Codex hooks", errors)
 
     catalog_check = subprocess.run(
         [
@@ -152,19 +150,53 @@ def main() -> int:
     require(catalog_check.returncode == 0, catalog_check.stderr.strip() or "component catalog validation failed", errors)
 
     components = {component["name"]: component for component in catalog.get("components", [])}
+    paseo_component = components.get("hukuhaka-paseo", {})
+    require(paseo_component.get("kind") == "plugin" and paseo_component.get("default") is False
+            and set(paseo_component.get("hosts", {})) == {"codex", "claude"},
+            "Paseo coordination must be an optional dual-host plugin", errors)
+    for host in ("codex", "claude"):
+        paseo_manifest_path = PASEO / f".{host}-plugin/plugin.json"
+        require(paseo_manifest_path.is_file(), f"missing Paseo {host} manifest", errors)
+        if paseo_manifest_path.is_file():
+            paseo_manifest = load_json(paseo_manifest_path)
+            require(paseo_manifest.get("skills") == "./skills/"
+                    and paseo_manifest.get("version") == "0.1.0"
+                    and not any(key in paseo_manifest for key in ("hooks", "agents", "mcpServers")),
+                    f"Paseo {host} package must expose guidance without runtime interception", errors)
+    profiles = [component for component in components.values() if component.get("kind") == "profile"]
+    require({component["name"] for component in profiles} == {
+        "advisor-gpt", "advisor-claude", "worker", "scouter", "designer", "writer", "vision"},
+        "Paseo profile catalog differs from the seven approved defaults", errors)
+    for profile in profiles:
+        require(profile.get("default") is True and set(profile.get("hosts", {})) == {"paseo"},
+                f"{profile['name']}: must be a recommended Paseo-only profile", errors)
+    for component in components.values():
+        if component.get("kind") == "plugin" and component.get("lifecycle") == "supported":
+            require(set(component.get("hosts", {})) == {"codex", "claude"},
+                    f"{component['name']}: must expose both native hosts", errors)
+    claude_template = components.get("claude-md", {})
+    require(claude_template.get("default") is True and claude_template.get("path") == "templates/CLAUDE.md"
+            and set(claude_template.get("hosts", {})) == {"claude"},
+            "claude-md must be the default Claude-only template", errors)
+    claude_guidance = (ROOT / "templates/CLAUDE.md").read_text(encoding="utf-8")
+    require("# Subagents" not in claude_guidance and "visualize" not in claude_guidance
+            and "astra_worker" not in claude_guidance and "evidence-scout" not in claude_guidance,
+            "Claude guidance must exclude Codex specialists and global visualization", errors)
+    memory_claude = load_json(MEMORY_AUDIT / ".claude-plugin/plugin.json")
+    require("hooks" not in memory_claude, "Claude memory audit must rely on native warning without pressure hooks", errors)
     memory_component = components.get("hukuhaka-memory-audit", {})
     require(memory_component.get("kind") == "plugin",
             "memory audit must be catalogued as a plugin", errors)
     require(memory_component.get("default") is False,
             "memory audit must remain opt-in", errors)
-    require(set(memory_component.get("hosts", {})) == {"codex"},
-            "memory audit must be Codex-only", errors)
-    require(memory_audit_manifest.get("version") == "0.2.0",
-            "memory audit plugin version must be 0.2.0", errors)
+    require(set(memory_component.get("hosts", {})) == {"codex", "claude"},
+            "memory audit must expose both native hosts", errors)
+    require(memory_audit_manifest.get("version") == "0.2.1",
+            "memory audit plugin version must be 0.2.1", errors)
     require(memory_audit_manifest.get("skills") == "./skills/",
             "memory audit manifest must expose its Skill", errors)
-    require("hooks" not in memory_audit_manifest,
-            "memory audit must use default hooks/hooks.json discovery", errors)
+    require(memory_audit_manifest.get("hooks") == "./hooks/codex.json",
+            "memory audit must explicitly select Codex hooks", errors)
     scout_component = components.get("evidence-scout", {})
     require(scout_component.get("kind") == "agent" and scout_component.get("default") is False,
             "evidence-scout must be an optional agent", errors)
@@ -180,6 +212,8 @@ def main() -> int:
     require(worker_component.get("path") == "agents/astra_worker.toml",
             "astra_worker source differs", errors)
     runner_component = components.get("result-runner", {})
+    require(set(runner_component.get("hosts", {})) == {"codex"},
+            "result-runner must be Codex-only", errors)
     require(runner_component.get("kind") == "agent" and runner_component.get("default") is False,
             "result-runner must be an optional agent", errors)
     require(runner_component.get("path") == "agents/result-runner.toml",
@@ -209,10 +243,10 @@ def main() -> int:
             "Project Docs must be catalogued as a plugin", errors)
     require(project_docs_component.get("default") is False,
             "Project Docs plugin must remain opt-in", errors)
-    require(set(project_docs_component.get("hosts", {})) == {"codex"},
-            "Project Docs plugin must be Codex-only", errors)
-    require(project_docs_manifest.get("version") == "0.2.0",
-            "Project Docs plugin version must be 0.2.0", errors)
+    require(set(project_docs_component.get("hosts", {})) == {"codex", "claude"},
+            "Project Docs must expose both native hosts", errors)
+    require(project_docs_manifest.get("version") == "0.2.1",
+            "Project Docs plugin version must be 0.2.1", errors)
     require(project_docs_manifest.get("skills") == "./skills/",
             "Project Docs manifest must expose its Skill", errors)
     uiux_component = components.get("hukuhaka-uiux-foundation", {})
@@ -220,10 +254,10 @@ def main() -> int:
             "UI/UX Foundation must be catalogued as a plugin", errors)
     require(uiux_component.get("default") is False,
             "UI/UX Foundation must remain optional", errors)
-    require(set(uiux_component.get("hosts", {})) == {"codex"},
-            "UI/UX Foundation must be Codex-only", errors)
-    require(uiux_manifest.get("version") == "0.1.1",
-            "UI/UX Foundation plugin version must be 0.1.1", errors)
+    require(set(uiux_component.get("hosts", {})) == {"codex", "claude"},
+            "UI/UX Foundation must expose both native hosts", errors)
+    require(uiux_manifest.get("version") == "0.1.2",
+            "UI/UX Foundation plugin version must be 0.1.2", errors)
     require(uiux_manifest.get("skills") == "./skills/",
             "UI/UX Foundation manifest must expose its Skill", errors)
     require("hooks" not in uiux_manifest,
@@ -244,44 +278,30 @@ def main() -> int:
             "UI/UX Foundation Skill name differs from its invocation",
             errors,
         )
-    for contract in (
-        "Use automatically for user-visible frontend and UI/UX work",
-        "Create`, `Modify`, `Extend`, `Audit`, or `Parity",
-        "The design system owns reusable visual and interaction rules",
-        "The mockup owns screen-level visual intent and composition",
-        "The application owns working behavior",
-        "An audit or review does not authorize edits",
-        "Do not create `DESIGN.md`",
-        "references/verification.md",
+    for reference in (
+        "design-principles.md",
+        "visual-design.md",
+        "experience-design.md",
+        "design-system.md",
+        "application.md",
+        "synchronization.md",
+        "design-review.md",
+        "verification.md",
     ):
-        require(contract in uiux_skill,
-                f"UI/UX Foundation Skill contract is missing: {contract}", errors)
+        target = f"references/{reference}"
+        require(target in uiux_skill and (UIUX_SKILL.parent / target).is_file(),
+                f"UI/UX Foundation topic route is missing: {target}", errors)
     if host_support:
-        require("# Codex support contract" in host_support,
-                "host-support docs do not declare Codex as the active host", errors)
-        require("| <code>hukuhaka-uiux-foundation</code> | Native optional plugin | Supported |" in host_support,
+        require("# Host support contract" in host_support,
+                "host-support docs do not declare native host support", errors)
+        require("| <code>hukuhaka-uiux-foundation</code> | Native optional plugin | Native optional plugin | Supported |" in host_support,
                 "host-support matrix does not declare UI/UX Foundation", errors)
         require("lifecycle hooks and commands" in host_support and "trusted by" in host_support and "Codex" in host_support,
                 "host-support docs omit Codex hook trust behavior", errors)
-    reader_component = components.get("project-doc-reader", {})
-    require(reader_component.get("kind") == "agent",
-            "project-doc-reader must be catalogued as an agent", errors)
-    require(reader_component.get("default") is False,
-            "project-doc-reader must remain opt-in", errors)
-    require(set(reader_component.get("hosts", {})) == {"codex"},
-            "project-doc-reader must be Codex-only", errors)
-    require(reader_component.get("path") == "agents/project-doc-reader.toml",
-            "project-doc-reader catalog source differs", errors)
-    reader_resources = [
-        ("scripts/project_docs.py", "agents/project-doc-reader-tool.py"),
-        ("scripts/reader_protocol.py", "agents/project-doc-reader-protocol.py"),
-        ("references/reader-request-v2.schema.json", "agents/project-doc-reader/reader-request-v2.schema.json"),
-        ("references/reader-response-v2.schema.json", "agents/project-doc-reader/reader-response-v2.schema.json"),
-    ]
-    require(reader_component.get("resources") == [
-        {"source": "marketplace/hukuhaka-project-docs/skills/project-docs/" + source,
-         "target": target} for source, target in reader_resources
-    ], "project-doc-reader protocol resources differ", errors)
+    require("project-doc-reader" not in components,
+            "retired project-doc-reader must not be installable", errors)
+    require(not (ROOT / "agents/project-doc-reader.toml").exists(),
+            "retired project-doc-reader role must not be distributed", errors)
     expected_codex = {
         name for name, component in components.items()
         if component.get("kind") == "plugin"
@@ -333,16 +353,20 @@ def main() -> int:
             "design dependency contract is missing", errors)
     require("spec path:" in build_handoff and "selects its own craft references" in build_handoff,
             "build handoff must pass content and delegate design selection", errors)
-    require("## Codex handoff" in build_handoff,
+    codex_handoff = (BUILD_HANDOFF.parent / "hosts/codex.md").read_text(encoding="utf-8")
+    claude_handoff = (BUILD_HANDOFF.parent / "hosts/claude.md").read_text(encoding="utf-8")
+    require("hosts/codex.md" in build_handoff and "# Codex handoff" in codex_handoff,
             "build handoff does not define the Codex worker adapter", errors)
-    require("Claude Code" not in build_handoff,
-            "build handoff still contains a retired Claude adapter", errors)
-    require("write-capable worker" in build_handoff,
+    require("Claude Code" in build_handoff,
+            "build handoff lacks its native Claude designer route", errors)
+    require("write-capable worker" in codex_handoff,
             "Codex build handoff does not define its worker adapter", errors)
-    require("model: gpt-5.6-terra" in build_handoff and "reasoning_effort: high" in build_handoff,
+    require("model: gpt-5.6-terra" in codex_handoff and "reasoning_effort: high" in codex_handoff,
             "designer handoff must explicitly select Terra high", errors)
-    require("fork_turns: none" in build_handoff and "references/worker-contract.md" in build_handoff,
+    require("fork_turns: none" in codex_handoff and "references/worker-contract.md" in codex_handoff,
             "designer handoff must pass its specialist contract in a fresh context", errors)
+    require("hosts/claude.md" in build_handoff and "hukuhaka-report-planner:artifact-designer" in claude_handoff,
+            "build handoff lacks the exact native Claude designer route", errors)
     worker_contract = (PLANNER / "skills/artifact-designer/references/worker-contract.md").read_text(encoding="utf-8")
     require("Do not spawn agents" in worker_contract and "finalized spec" in worker_contract
             and "directly inspect" in worker_contract and "SKILL.md" in worker_contract,
@@ -399,12 +423,12 @@ def main() -> int:
         require(canonical in str(worklog_codex.get("interface", {}).get("defaultPrompt", "")),
                 "worklog Codex manifest does not use the canonical identity", errors)
     for contract in (
-        'instruction = root / "AGENTS.md"',
+        'instruction = root / ("CLAUDE.md" if host == "claude"',
         "hukuhaka-worklog:begin",
         "Archive destinations are written first",
         "def run_hook(",
-        '"PLUGIN_DATA" in environment',
-        'def setup(root: Path)',
+        '("PLUGIN_DATA" if host == "codex" else "CLAUDE_PLUGIN_DATA") in environment',
+        'def setup(root: Path, host: str = "codex")',
         '"decision": "block"',
     ):
         require(contract in worklog_script,
@@ -416,7 +440,7 @@ def main() -> int:
         entries = hook_groups.get(event, [])
         require(len(entries) == 1 and entries[0].get("hooks") == [{
             "type": "command",
-            "command": 'python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" hook',
+            "command": 'python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" --host codex hook',
             "timeout": 5,
         }] and "matcher" not in entries[0],
                 f"worklog {event} must use the synchronous paired adapter for all tools", errors)
@@ -430,7 +454,7 @@ def main() -> int:
         if len(handlers) == 1:
             require(
                 handlers[0].get("command")
-                == 'python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" hook',
+                == 'python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" --host codex hook',
                 "worklog hook must invoke the bundled mechanical adapter directly",
                 errors,
             )
@@ -443,7 +467,7 @@ def main() -> int:
     if memory_frontmatter:
         require(
             re.search(
-                r"^name:\s*codex-memory-audit\s*$",
+                r"^name:\s*memory-audit\s*$",
                 memory_frontmatter.group(1),
                 re.MULTILINE,
             ) is not None,
@@ -451,18 +475,20 @@ def main() -> int:
             errors,
         )
     for contract in (
-        "Check drift-prone\nclaims against the user's latest direction and current authoritative sources",
-        "provide the exact replacement or removal",
+        "Check the user's latest direction and current authoritative sources",
+        "Provide the exact replacement or removal",
         "IF the proposed changes are not yet approved:\n    Present the concrete change set for approval without applying it.",
-        "Use the memory update mechanism permitted by the current host instructions.",
-        "If the mechanism records a request or note, report that status rather than\n    claiming the generated memories have already been updated.",
-        "Never manually edit generated summaries, indexes, rollout summaries, or evidence.",
+        "IF the host provides a supported memory update mechanism:\n        Submit the approved changes through that mechanism.",
+        "IF it records only a request or note:\n            Report submission, not confirmed memory regeneration.",
+        "Never manually edit generated memory stores, rollout summaries, or evidence.",
         "Do not alter repositories, Git state, services, or external systems merely to\nmake a memory claim true.",
     ):
         require(contract in memory_audit_skill,
                 f"memory audit Skill contract is missing: {contract}", errors)
-    require("$codex-memory-audit" in memory_audit_openai,
+    require("$memory-audit" in memory_audit_openai,
             "memory audit metadata lacks its canonical invocation", errors)
+    require("$memory-audit" in memory_audit_manifest.get("interface", {}).get("defaultPrompt", ""),
+            "memory audit manifest lacks its canonical invocation", errors)
 
     memory_hook_groups = memory_audit_hooks.get("hooks", {})
     require(set(memory_hook_groups) == {"SessionStart"},
@@ -479,7 +505,7 @@ def main() -> int:
         if len(memory_handlers) == 1:
             require(
                 memory_handlers[0].get("command")
-                == 'python3 "${PLUGIN_ROOT}/scripts/memory_pressure_hook.py"',
+                == 'python3 "${PLUGIN_ROOT}/scripts/memory_pressure_hook.py" --host codex',
                 "memory audit hook must invoke the bundled pressure script",
                 errors,
             )
@@ -491,7 +517,7 @@ def main() -> int:
         'os.environ.get("PLUGIN_DATA")',
         'os.environ.get("CODEX_HOME"',
         "Codex memory pressure:",
-        "$codex-memory-audit",
+        "$memory-audit",
     ):
         require(contract in memory_audit_script,
                 f"memory audit hook contract is missing: {contract}", errors)
@@ -513,7 +539,7 @@ def main() -> int:
     normalized_agents = " ".join(agents_template.split())
     require([line for line in agents_template.splitlines() if line.startswith("# ")]
             == ["# Ground Decisions", "# Code Quality", "# Scope and Execution", "# Change Preview",
-                "# Verification", "# Subagents", "# Git Workflow"],
+                "# Verification", "# Codex tools", "# Subagents", "# Git Workflow"],
             "AGENTS.md template must contain the shared working principles and Git workflow", errors)
     for rule in agents_template_rules:
         require(rule in normalized_agents,
@@ -530,18 +556,6 @@ def main() -> int:
     ):
         require(contract in astra_worker,
                 f"astra_worker contract is missing: {contract}", errors)
-    for contract in (
-        'model = "gpt-5.6-luna"',
-        'model_reasoning_effort = "xhigh"',
-        'sandbox_mode = "read-only"',
-        "manifestBytes",
-        "Never execute commands",
-        "reader-catalog",
-        "reader-read",
-        "Never inherit workdir",
-    ):
-        require(contract in project_doc_reader,
-                f"project-doc-reader contract is missing: {contract}", errors)
     # Package reachability, not a proxy for native routing or semantic quality.
     project_docs_references = PROJECT_DOCS_SKILL.parent / "references"
     for name in ("context", "impact", "maintenance"):
@@ -550,9 +564,7 @@ def main() -> int:
                 f"Project Docs workflow reference is missing or empty: {name}", errors)
         require(f"references/{name}.md" in project_docs_skill,
                 f"Project Docs entrypoint does not link its {name} workflow", errors)
-    for name in ("reader.md", "project-docs.schema.json", "reader-request.schema.json",
-                 "reader-response.schema.json", "reader-protocol.md",
-                 "reader-request-v2.schema.json", "reader-response-v2.schema.json"):
+    for name in ("project-docs.schema.json",):
         require((project_docs_references / name).is_file(),
                 f"Project Docs compatibility resource is missing: {name}", errors)
 
@@ -584,12 +596,12 @@ def main() -> int:
                 f"README does not expose {component_name}", errors)
     require("hukuhaka-codex" not in readme,
             "README still exposes the retired hukuhaka-codex component", errors)
-    require("Claude Code" not in readme,
-            "README still exposes a retired Claude host", errors)
+    require("Claude Code" in readme,
+            "README does not expose the supported Claude host", errors)
 
     if errors:
         return report(errors)
-    print("host-support: Codex plugin contracts and component lifecycle are consistent")
+    print("host-support: native host plugin contracts and component lifecycle are consistent")
     return 0
 
 

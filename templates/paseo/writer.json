@@ -1,0 +1,7 @@
+{
+  "name": "writer",
+  "provider": "antigravity",
+  "model": "gemini-3.8-flash-high",
+  "modeId": "default",
+  "notes": "Use for meaning-preserving wording, style, readability, and redundancy improvements to existing text, returning proposals for the main agent to review."
+}

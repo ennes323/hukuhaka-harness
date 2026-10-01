@@ -1,6 +1,0 @@
-interface:
-  display_name: "Codex Memory Audit"
-  short_description: "Review stale or oversized Codex memory"
-  default_prompt: "Use $codex-memory-audit to audit Codex local memories and propose an approval-gated cleanup."
-policy:
-  allow_implicit_invocation: true

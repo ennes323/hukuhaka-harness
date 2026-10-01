@@ -1,7 +1,7 @@
 {
   "name": "hukuhaka-memory-audit",
-  "version": "0.2.0",
-  "description": "Audit Codex local memories for stale, duplicated, conflicting, or overly specific engineering context without editing generated memory files directly.",
+  "version": "0.2.1",
+  "description": "Audit local memory quality, English wording, and procedural expression through the current host's supported update mechanism.",
   "author": {
     "name": "hukuhaka"
   },
@@ -17,14 +17,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Hukuhaka Memory Audit",
-    "shortDescription": "Review stale or oversized Codex memory safely.",
-    "longDescription": "Review retained context for durable value and current evidence, propose precise cleanup, and submit approved changes through the host's supported memory update mechanism. A separate hook suggests review when memory size crosses a threshold; generated memory files are never hand-edited.",
+    "shortDescription": "Review memory quality, language, and procedures.",
+    "longDescription": "Review retained context for durable value, current evidence, English wording, and suitable procedural pseudocode while preserving meaning. Submit approved changes through the host's supported memory update mechanism. Codex uses its generated-memory update path and a separate size-warning hook.",
     "developerName": "hukuhaka",
     "category": "Developer Tools",
     "capabilities": [
       "Read",
       "Lifecycle hooks"
     ],
-    "defaultPrompt": "Use $codex-memory-audit to audit Codex local memories for stale, duplicated, or overly specific engineering context."
-  }
+    "defaultPrompt": "Use $memory-audit to review local memory quality and expression, then propose concrete cleanup."
+  },
+  "hooks": "./hooks/codex.json"
 }

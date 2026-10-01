@@ -1,9 +1,83 @@
 {
   "schemaVersion": 1,
   "marketplaces": {
-    "codex": "hukuhaka-harness"
+    "codex": "hukuhaka-harness",
+    "claude": "hukuhaka-plugin"
   },
   "components": [
+    {
+      "name": "hukuhaka-paseo",
+      "kind": "plugin",
+      "lifecycle": "supported",
+      "default": false,
+      "hosts": {
+        "codex": {"manifest": "marketplace/hukuhaka-paseo/.codex-plugin/plugin.json"},
+        "claude": {"manifest": "marketplace/hukuhaka-paseo/.claude-plugin/plugin.json"}
+      }
+    },
+    {
+      "name": "advisor-gpt",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo Codex advisor profile",
+      "path": "templates/paseo/advisor-gpt.json",
+      "hosts": {"paseo": {}}
+    },
+    {
+      "name": "advisor-claude",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo Claude advisor profile",
+      "path": "templates/paseo/advisor-claude.json",
+      "hosts": {"paseo": {}}
+    },
+    {
+      "name": "worker",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo implementation and investigation profile",
+      "path": "templates/paseo/worker.json",
+      "hosts": {"paseo": {}}
+    },
+    {
+      "name": "scouter",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo source and log lookup profile",
+      "path": "templates/paseo/scouter.json",
+      "hosts": {"paseo": {}}
+    },
+    {
+      "name": "designer",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo visual design profile",
+      "path": "templates/paseo/designer.json",
+      "hosts": {"paseo": {}}
+    },
+    {
+      "name": "writer",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo prose and documentation profile",
+      "path": "templates/paseo/writer.json",
+      "hosts": {"paseo": {}}
+    },
+    {
+      "name": "vision",
+      "kind": "profile",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Paseo image and rendered artifact inspection profile",
+      "path": "templates/paseo/vision.json",
+      "hosts": {"paseo": {}}
+    },
     {
       "name": "hukuhaka-report-planner",
       "kind": "plugin",
@@ -12,6 +86,9 @@
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-report-planner/.codex-plugin/plugin.json"
+        },
+        "claude": {
+          "manifest": "marketplace/hukuhaka-report-planner/.claude-plugin/plugin.json"
         }
       }
     },
@@ -23,6 +100,9 @@
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-engineering-plan/.codex-plugin/plugin.json"
+        },
+        "claude": {
+          "manifest": "marketplace/hukuhaka-engineering-plan/.claude-plugin/plugin.json"
         }
       }
     },
@@ -34,6 +114,9 @@
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-worklog/.codex-plugin/plugin.json"
+        },
+        "claude": {
+          "manifest": "marketplace/hukuhaka-worklog/.claude-plugin/plugin.json"
         }
       }
     },
@@ -45,6 +128,9 @@
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-memory-audit/.codex-plugin/plugin.json"
+        },
+        "claude": {
+          "manifest": "marketplace/hukuhaka-memory-audit/.claude-plugin/plugin.json"
         }
       }
     },
@@ -56,6 +142,9 @@
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-project-docs/.codex-plugin/plugin.json"
+        },
+        "claude": {
+          "manifest": "marketplace/hukuhaka-project-docs/.claude-plugin/plugin.json"
         }
       }
     },
@@ -67,6 +156,9 @@
       "hosts": {
         "codex": {
           "manifest": "marketplace/hukuhaka-uiux-foundation/.codex-plugin/plugin.json"
+        },
+        "claude": {
+          "manifest": "marketplace/hukuhaka-uiux-foundation/.claude-plugin/plugin.json"
         }
       }
     },
@@ -79,6 +171,17 @@
       "path": "templates/AGENTS.md",
       "hosts": {
         "codex": {}
+      }
+    },
+    {
+      "name": "claude-md",
+      "kind": "template",
+      "lifecycle": "supported",
+      "default": true,
+      "description": "Scope-bound guidance (~/.claude/CLAUDE.md)",
+      "path": "templates/CLAUDE.md",
+      "hosts": {
+        "claude": {}
       }
     },
     {
@@ -110,35 +213,6 @@
       "default": false,
       "description": "Optional Luna xhigh read-only evidence collector for bounded source questions",
       "path": "agents/evidence-scout.toml",
-      "hosts": {
-        "codex": {}
-      }
-    },
-    {
-      "name": "project-doc-reader",
-      "kind": "agent",
-      "lifecycle": "supported",
-      "default": false,
-      "description": "Manifest-gated Luna read-only project documentation reader",
-      "path": "agents/project-doc-reader.toml",
-      "resources": [
-        {
-          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/scripts/project_docs.py",
-          "target": "agents/project-doc-reader-tool.py"
-        },
-        {
-          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/scripts/reader_protocol.py",
-          "target": "agents/project-doc-reader-protocol.py"
-        },
-        {
-          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/references/reader-request-v2.schema.json",
-          "target": "agents/project-doc-reader/reader-request-v2.schema.json"
-        },
-        {
-          "source": "marketplace/hukuhaka-project-docs/skills/project-docs/references/reader-response-v2.schema.json",
-          "target": "agents/project-doc-reader/reader-response-v2.schema.json"
-        }
-      ],
       "hosts": {
         "codex": {}
       }

@@ -17,8 +17,10 @@ evaluate reproducibility, accessibility, label density, and the final viewing si
 
 ## Shared anatomy
 
-- **Time axis**: one axis, one unit, labeled with the unit (`t (ms)`, `UTC`). Ticks mono,
-  tabular-nums, ≤7 major ticks. A broken or cropped axis is annotated, never silent
+- **Time axis**: one axis, one unit, labeled with the unit (`t (ms)`, `UTC`). Use mono,
+  tabular-number ticks. As an editorial starting point, use roughly seven or fewer
+  major ticks, adjusted for the viewing size and required time detail. Annotate a
+  broken or cropped axis.
 - **Lanes**: one horizontal lane per actor / stage / resource; lane labels short and
   left-anchored; hairline lane separators or none — alignment can carry the lanes alone
 - **Duration = bar, instant = marker**: spans render as bars in the lane; instantaneous

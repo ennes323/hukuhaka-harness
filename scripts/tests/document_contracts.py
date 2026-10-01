@@ -16,6 +16,7 @@ LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 CURRENT_DOCS = (
     "AGENTS.md",
+    "CLAUDE.md",
     "README.md",
     "INSTALL.md",
     "docs/README.md",
@@ -29,6 +30,7 @@ CURRENT_DOCS = (
     "docs/plugin-guide/agents-and-hooks.md",
     "docs/plugin-guide/automation-and-loops.md",
     "docs/plugin-guide/codex.md",
+    "docs/plugin-guide/claude.md",
     "docs/plugin-guide/distribution.md",
     "docs/plugin-guide/headless-and-automation.md",
     "docs/plugin-guide/plugins.md",
@@ -43,7 +45,7 @@ def required_current_docs(root: Path) -> tuple[str, ...]:
     """Require repository instructions only in the private source checkout."""
     if (root / "scripts" / "release" / "main.py").is_file():
         return CURRENT_DOCS
-    return tuple(relative for relative in CURRENT_DOCS if relative != "AGENTS.md")
+    return tuple(relative for relative in CURRENT_DOCS if relative not in {"AGENTS.md", "CLAUDE.md"})
 
 
 def markdown_slug(value: str) -> str:
@@ -109,10 +111,12 @@ def validate_current_docs(root: Path = ROOT) -> list[str]:
         if component.get("kind") != "plugin":
             continue
         versions = set()
-        metadata = component.get("hosts", {}).get("codex", {})
-        manifest = metadata.get("manifest")
-        if manifest:
-            versions.add(json.loads((root / manifest).read_text(encoding="utf-8"))["version"])
+        for metadata in component.get("hosts", {}).values():
+            manifest = metadata.get("manifest")
+            if manifest:
+                versions.add(json.loads((root / manifest).read_text(encoding="utf-8"))["version"])
+        if len(versions) > 1:
+            errors.append(f"{component['name']}: host manifest versions differ")
         if len(versions) == 1:
             manifests[component["name"]] = versions.pop()
 
@@ -123,7 +127,7 @@ def validate_current_docs(root: Path = ROOT) -> list[str]:
         if f"| `{version}` |" not in row and f"| <code>{version}</code> |" not in row:
             errors.append(f"README.md: {name} version differs from manifest {version}")
 
-    errors.extend(validate_codex_only_docs(root))
+    errors.extend(validate_host_docs(root))
     for relative in required_current_docs(root):
         path = root / relative
         if not path.is_file():
@@ -145,20 +149,19 @@ def validate_current_docs(root: Path = ROOT) -> list[str]:
     return errors
 
 
-def validate_codex_only_docs(root: Path = ROOT) -> list[str]:
-    """Keep the active instruction and documentation surface Codex-only."""
+def validate_host_docs(root: Path = ROOT) -> list[str]:
+    """Keep shared private authority and retired package boundaries explicit."""
     errors: list[str] = []
-    if (root / "CLAUDE.md").exists():
-        errors.append("CLAUDE.md: retired root instruction file must not remain")
-    if (root / "docs" / "hukuhaka-codex").exists():
+    private = (root / "scripts/release/main.py").is_file()
+    router = root / "CLAUDE.md"
+    if private and router.is_file() and router.read_text(encoding="utf-8").strip() != "@AGENTS.md":
+        errors.append("CLAUDE.md: must import shared AGENTS.md authority")
+    if not private:
+        for name in ("CLAUDE.md", "AGENTS.md"):
+            if (root / name).exists():
+                errors.append(f"{name}: private root instructions must not ship publicly")
+    if (root / "docs/hukuhaka-codex").exists():
         errors.append("docs/hukuhaka-codex: retired maintenance records must live under docs/archive")
-    for relative in CURRENT_DOCS:
-        path = root / relative
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        if re.search(r"\bClaude(?: Code)?\b", text, re.IGNORECASE):
-            errors.append(f"{relative}: active document contains retired host reference")
     return errors
 
 
@@ -168,14 +171,13 @@ def validate_project_docs_status(root: Path, catalog: dict, readme: str) -> list
     components = {item["name"]: item for item in catalog.get("components", [])}
     for name, label in (
         ("hukuhaka-project-docs", "hukuhaka-project-docs"),
-        ("project-doc-reader", "Project Doc Reader"),
     ):
         component = components.get(name, {})
         if component.get("default") is not False or component.get("lifecycle") != "supported":
             errors.append(f"components.json: {name} must retain supported installation and opt-in default")
         row = next((line for line in readme.splitlines() if line.startswith(f"| **{label}** |")), "")
-        if "Experimental / opt-in" not in row or "Codex" not in row:
-            errors.append(f"README.md: {name} must be experimental / opt-in and Codex-only")
+        if "Experimental / opt-in" not in row or any(host not in row for host in ("Codex", "Claude Code")):
+            errors.append(f"README.md: {name} must be experimental / opt-in with native host support")
 
     for relative in (
         "docs/README.md",

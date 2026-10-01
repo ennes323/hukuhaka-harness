@@ -1,7 +1,7 @@
 {
   "name": "hukuhaka-uiux-foundation",
-  "version": "0.1.1",
-  "description": "Keep frontend design decisions complete and consistent across design systems, mockups, components, and rendered applications.",
+  "version": "0.1.2",
+  "description": "Contextual design and usability guidance for application interfaces.",
   "author": {
     "name": "hukuhaka"
   },
@@ -17,8 +17,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Hukuhaka UI/UX Foundation",
-    "shortDescription": "Keep application UI decisions complete and synchronized.",
-    "longDescription": "Inspect existing frontend design authority, establish or refine missing UI foundations, assign reusable decisions to the right system layer, synchronize design systems, mockups, and applications, and verify rendered responsive and accessible behavior.",
+    "shortDescription": "Design and usability guidance for application UI.",
+    "longDescription": "Use referenced design guidance to build application interfaces, review usability, and keep design systems, mockups, and code consistent. Choose guidance for the task and verify the result.",
     "developerName": "hukuhaka",
     "category": "Developer Tools",
     "capabilities": [

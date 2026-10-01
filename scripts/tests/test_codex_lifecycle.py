@@ -245,152 +245,103 @@ class CodexLifecycleTests(unittest.TestCase):
         )
 
     def test_first_agent_failure_reports_no_completed_operation(self) -> None:
-        reader = next(
+        agent = next(
             item
             for item in self.catalog["components"]
-            if item.get("name") == "project-doc-reader"
+            if item.get("name") == "astra_worker"
         )
-        reader["path"] = "agents/missing-project-doc-reader.toml"
+        agent["path"] = "agents/missing-astra-worker.toml"
         installer = self.installer()
 
         with self.assertRaisesRegex(InstallerError, "source is missing"):
-            installer.install(["project-doc-reader"])
+            installer.install(["astra_worker"])
 
         self.assertEqual([], installer.completed)
         self.assertFalse(
-            (self.codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
+            (self.codex_home / ".hukuhaka-astra_worker-manifest.json").exists()
         )
 
-    def test_reader_resource_is_managed_adopted_and_drift_protected(self) -> None:
-        helper = self.codex_home / "agents" / "project-doc-reader-tool.py"
-        source = (
-            ROOT
-            / "marketplace"
-            / "hukuhaka-project-docs"
-            / "skills"
-            / "project-docs"
-            / "scripts"
-            / "project_docs.py"
-        )
-        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
-            self.installer().install(["project-doc-reader"])
-        self.assertEqual(source.read_bytes(), helper.read_bytes())
-        manifest_path = (
-            self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
-        )
-        manifest = self.receipt()
-        self.assertEqual(4, manifest["schemaVersion"])
+    def test_current_agent_resources_are_owned_and_drift_protected(self) -> None:
+        self.catalog["components"].append({
+            "name": "resource-probe",
+            "kind": "agent",
+            "lifecycle": "supported",
+            "default": False,
+            "path": "agents/astra_worker.toml",
+            "resources": [{
+                "source": "templates/AGENTS.md",
+                "target": "agents/resource-probe.txt",
+            }],
+            "hosts": {"codex": {}},
+        })
+        resource = self.codex_home / "agents/resource-probe.txt"
+        self.installer().install(["resource-probe"])
+        self.assertEqual((ROOT / "templates/AGENTS.md").read_bytes(), resource.read_bytes())
         self.assertEqual(
-            ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
-             "agents/project-doc-reader/reader-request-v2.schema.json",
-             "agents/project-doc-reader/reader-response-v2.schema.json"],
-            [item["target"] for item in manifest["resources"]],
+            ["agents/resource-probe.txt"],
+            [item["target"] for item in self.receipt("resource-probe")["resources"]],
         )
-        reader = next(item for item in self.catalog["components"] if item["name"] == "project-doc-reader")
-        for resource in reader["resources"]:
-            self.assertEqual((ROOT / resource["source"]).read_bytes(),
-                             (self.codex_home / resource["target"]).read_bytes())
-        # The installed helper must resolve its own validator and both schemas,
-        # independently of the working directory or a separately installed Skill.
-        request = {"schemaVersion": 2, "requestId": "install-test", "mode": "context",
-                   "root": "/no-repository-needed", "task": "Find a contract.",
-                   "action": "inspect", "paths": [], "symbols": [],
-                   "questions": [{"id": "q1", "question": "What governs this?"}],
-                   "budget": {"maxDocuments": 1, "maxBytes": 1024}}
-        response = {"schemaVersion": 2, "requestId": "install-test", "mode": "context",
-                    "root": request["root"], "status": "unavailable", "manifest": "project-docs.json",
-                    "selectedDocuments": [], "excludedDocuments": [], "conflicts": [],
-                    "answers": [{"questionId": "q1", "status": "unknown", "answer": "",
-                                 "sources": [], "reason": "No repository was opened."}],
-                    "requiredChecks": [], "errors": [{"code": "operation.failed", "path": "root",
-                                                         "message": "Repository unavailable."}],
-                    "budgetUsed": {"manifestBytes": 0, "documentBytes": 0, "documents": 0,
-                                   "maxDocuments": 1, "maxBytes": 1024, "truncated": False}}
-        for command, data in (("reader-validate-request", request),
-                              ("reader-validate-response", {"request": request, "response": response})):
-            result = subprocess.run(("python3", str(helper), command), input=json.dumps(data),
-                                    cwd=str(self.codex_home), text=True, capture_output=True)
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            self.assertEqual("valid", json.loads(result.stdout)["status"])
+        self.installer().install(["resource-probe"])
+        resource.write_text("edited\n", encoding="utf-8")
+        with self.assertRaisesRegex(DriftError, "managed resource-probe files changed"):
+            self.installer().install([])
+        self.assertEqual("edited\n", resource.read_text(encoding="utf-8"))
+        forced = CodexInstaller(ROOT, self.catalog, "1.2.3", local_source=True, force=True)
+        forced.install([])
+        self.assertFalse(resource.exists())
+        self.assertIsNone(self.receipt("resource-probe"))
 
-        manifest["schemaVersion"] = 1
-        manifest.pop("resources")
-        block = b"<!-- hukuhaka-project-doc-reader:begin -->\nLegacy routing.\n<!-- hukuhaka-project-doc-reader:end -->"
-        (self.codex_home / "AGENTS.md").write_bytes(block + b"\n")
-        manifest.update({"routingTarget": "AGENTS.md", "routingHash": hashlib.sha256(block).hexdigest(),
-                         "prefix": "", "suffix": "\n"})
-        store = InstallState(self.codex_home)
-        state = store.read()
-        del state["components"]["project-doc-reader"]
-        store.path.write_bytes(encode_state(state))
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
-            self.installer().install(["project-doc-reader"])
-        upgraded = self.receipt()
-        self.assertEqual(4, upgraded["schemaVersion"])
-        self.assertFalse((self.codex_home / "AGENTS.md").exists())
-
-        helper.write_text("drift\n", encoding="utf-8")
-        with mock.patch(
-            "scripts.install.codex_config.CodexConfigEditor._doctor"
-        ), self.assertRaisesRegex(DriftError, "managed project-doc-reader files changed"):
-            self.installer().install(["project-doc-reader"])
-        self.assertEqual("drift\n", helper.read_text(encoding="utf-8"))
-
-        forced = CodexInstaller(
-            ROOT,
-            self.catalog,
-            "1.2.3",
-            local_source=True,
-            force=True,
-        )
-        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
-            forced.install(["project-doc-reader"])
-            forced._custom_agent("project-doc-reader", enabled=False).uninstall()
-        self.assertFalse(helper.exists())
-        self.assertFalse(manifest_path.exists())
-        self.assertIsNone(self.receipt())
-        for resource in reader["resources"]:
-            self.assertFalse((self.codex_home / resource["target"]).exists())
-
-    def test_reader_resource_source_failure_and_doctor_rollback_leave_no_state(self) -> None:
-        reader = next(
-            item
-            for item in self.catalog["components"]
-            if item.get("name") == "project-doc-reader"
-        )
-        reader["resources"][0]["source"] = "agents/missing-reader-tool.py"
+    def test_current_agent_resource_source_failure_and_symlink_guard(self) -> None:
+        component = {
+            "name": "resource-probe",
+            "kind": "agent",
+            "lifecycle": "supported",
+            "default": False,
+            "path": "agents/astra_worker.toml",
+            "resources": [{
+                "source": "agents/missing-resource.txt",
+                "target": "agents/resource-probe.txt",
+            }],
+            "hosts": {"codex": {}},
+        }
+        self.catalog["components"].append(component)
         with self.assertRaisesRegex(InstallerError, "resource.*source is missing"):
-            self.installer().install(["project-doc-reader"])
-        helper = self.codex_home / "agents" / "project-doc-reader-tool.py"
-        agent = self.codex_home / "agents" / "project-doc-reader.toml"
-        manifest = self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
-        self.assertFalse(helper.exists())
-        self.assertFalse(agent.exists())
-        self.assertFalse(manifest.exists())
-        self.assertIsNone(self.receipt())
+            self.installer().install(["resource-probe"])
+        self.assertIsNone(self.receipt("resource-probe"))
+        component["resources"][0]["source"] = "templates/AGENTS.md"
+        self.installer().install(["resource-probe"])
+        resource = self.codex_home / "agents/resource-probe.txt"
+        resource.unlink()
+        resource.symlink_to(ROOT / "README.md")
+        with self.assertRaisesRegex(InstallerError, "must be a regular file"):
+            self.installer().install([])
 
-        self.catalog = json.loads(
-            (ROOT / "components.json").read_text(encoding="utf-8")
-        )
+    def test_current_agent_resource_doctor_failure_rolls_back_payload_and_receipt(self) -> None:
+        self.catalog["components"].append({
+            "name": "resource-probe",
+            "kind": "agent",
+            "lifecycle": "supported",
+            "default": False,
+            "path": "agents/astra_worker.toml",
+            "resources": [{
+                "source": "templates/AGENTS.md",
+                "target": "agents/resource-probe.txt",
+            }],
+            "hosts": {"codex": {}},
+        })
         with mock.patch(
             "scripts.install.codex_config.CodexConfigEditor._doctor",
-            side_effect=InstallerError("injected reader doctor failure"),
-        ), self.assertRaisesRegex(InstallerError, "injected reader doctor failure"):
-            self.installer().install(["project-doc-reader"])
-        self.assertFalse(helper.exists())
-        self.assertFalse(agent.exists())
-        self.assertFalse(manifest.exists())
-        self.assertIsNone(self.receipt())
+            side_effect=InstallerError("injected config doctor failure"),
+        ), self.assertRaisesRegex(InstallerError, "injected config doctor failure"):
+            self.installer().install(["resource-probe"])
 
-    def test_reader_resource_symlink_is_rejected(self) -> None:
-        with mock.patch("scripts.install.codex_config.CodexConfigEditor._doctor"):
-            self.installer().install(["project-doc-reader"])
-        helper = self.codex_home / "agents" / "project-doc-reader-tool.py"
-        helper.unlink()
-        helper.symlink_to(ROOT / "README.md")
-        with self.assertRaisesRegex(InstallerError, "must be a regular file"):
-            self.installer().install(["project-doc-reader"])
+        for target in (
+            "agents/resource-probe.toml",
+            "agents/resource-probe.txt",
+            ".hukuhaka-resource-probe-manifest.json",
+        ):
+            self.assertFalse((self.codex_home / target).exists(), target)
+        self.assertIsNone(self.receipt("resource-probe"))
 
     def test_later_agent_failure_preserves_earlier_success_for_partial_result(self) -> None:
         installer = self.installer()
@@ -399,24 +350,24 @@ class CodexLifecycleTests(unittest.TestCase):
             "scripts.install.codex_config.CodexConfigEditor.verify",
             side_effect=[None, InstallerError("injected second agent validation failure")],
         ), self.assertRaisesRegex(InstallerError, "second agent validation failure"):
-            installer.install(["astra_worker", "project-doc-reader"])
+            installer.install(["astra_worker", "result-runner"])
 
         self.assertEqual(["installed astra_worker"], installer.completed)
         self.assertTrue(
             self.receipt("astra_worker") is not None
         )
         self.assertFalse(
-            (self.codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
+            (self.codex_home / ".hukuhaka-result-runner-manifest.json").exists()
         )
         state = installer.state.read()
         operation = state["operations"][-1]
         self.assertEqual("partial", operation["status"])
-        self.assertEqual("install:project-doc-reader", operation["error"]["stage"])
+        self.assertEqual("install:result-runner", operation["error"]["stage"])
         self.assertEqual({"astra_worker"}, set(state["components"]))
 
     def test_interrupted_operation_is_retained_and_nested_reset_is_one_attempt(self) -> None:
         state = InstallState(self.codex_home)
-        interrupted = state.begin_operation("install", "1.2.0", ["project-doc-reader"])
+        interrupted = state.begin_operation("install", "1.2.0", ["astra_worker"])
         self.installer().install(["agents-md"], reset=True, include_template=True)
         operations = state.read()["operations"]
         self.assertEqual(2, len(operations))
@@ -446,24 +397,45 @@ class CodexLifecycleTests(unittest.TestCase):
         shutil.copytree(fixture, self.codex_home, dirs_exist_ok=True)
         return self.codex_home / ".hukuhaka-project-doc-reader-manifest.json"
 
-    def test_released_reader_upgrade_repeat_and_owned_removal(self) -> None:
+    def test_released_reader_is_removed_on_desired_state_install(self) -> None:
         manifest_path = self.seed_released_reader()
         self.assertEqual(1, len(json.loads(manifest_path.read_text())["resources"]))
-        self.installer().install(["project-doc-reader"])
-        upgraded = self.receipt()
-        self.assertFalse(manifest_path.exists())
-        self.assertEqual(4, len(upgraded["resources"]))
-        before = {p: p.read_bytes() for p in (self.codex_home / "agents").rglob("*") if p.is_file()}
-        self.installer().install(["project-doc-reader"])
-        self.assertEqual(before, {p: p.read_bytes() for p in before})
         sentinel = self.codex_home / "agents/personal.toml"
         sentinel.write_bytes(b"personal\n")
-        self.installer().install([])
+        self.installer().install(["hukuhaka-project-docs"])
         self.assertFalse(manifest_path.exists())
         self.assertIsNone(self.receipt())
         self.assertEqual(b"personal\n", sentinel.read_bytes())
-        for entry in upgraded["resources"]:
+        for entry in ("agents/project-doc-reader.toml", "agents/project-doc-reader-tool.py"):
+            self.assertFalse((self.codex_home / entry).exists())
+        self.installer().install(["hukuhaka-project-docs"])
+        self.assertIsNone(self.receipt())
+
+    def test_retired_reader_central_v2_resources_are_removed(self) -> None:
+        legacy_path = self.seed_released_reader()
+        manifest = json.loads(legacy_path.read_text())
+        for target in (
+            "agents/project-doc-reader-protocol.py",
+            "agents/project-doc-reader/reader-request-v2.schema.json",
+            "agents/project-doc-reader/reader-response-v2.schema.json",
+        ):
+            path = self.codex_home / target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(target.encode("utf-8"))
+            manifest["resources"].append({"target": target, "hash": hashlib.sha256(path.read_bytes()).hexdigest()})
+        state = InstallState(self.codex_home)
+        data = state.read()
+        data["components"]["project-doc-reader"] = {
+            "kind": "agent", "version": "1.2.0", "installer_version": "1.2.0",
+            "installed_at": "unknown", "provenance": "legacy", "receipt": manifest,
+        }
+        state.path.write_bytes(encode_state(data))
+        legacy_path.unlink()
+        self.installer().install(["hukuhaka-project-docs"])
+        self.assertIsNone(self.receipt())
+        for entry in manifest["resources"]:
             self.assertFalse((self.codex_home / entry["target"]).exists())
+        self.assertFalse((self.codex_home / manifest["agentTarget"]).exists())
 
     def test_released_reader_deselection_preserves_unowned_new_resource(self) -> None:
         manifest_path = self.seed_released_reader()
@@ -475,20 +447,41 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertFalse((self.codex_home / "agents/project-doc-reader-tool.py").exists())
         self.assertEqual(b"personal helper\n", unowned.read_bytes())
 
-    def test_upgrade_resource_conflict_fails_before_plugin_mutation(self) -> None:
+    def test_retired_reader_legacy_routing_removal_preserves_user_text(self) -> None:
+        manifest_path = self.seed_released_reader()
+        manifest = json.loads(manifest_path.read_text())
+        block = (
+            b"<!-- hukuhaka-project-doc-reader:begin -->\n"
+            b"Historical routing.\n"
+            b"<!-- hukuhaka-project-doc-reader:end -->"
+        )
+        guidance = self.codex_home / "AGENTS.md"
+        guidance.write_bytes(b"# User guidance\n\n" + block + b"\n")
+        manifest.update({
+            "schemaVersion": 1, "routingTarget": "AGENTS.md",
+            "routingHash": hashlib.sha256(block).hexdigest(),
+            "prefix": "\n\n", "suffix": "\n",
+        })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.installer().install(["hukuhaka-project-docs"])
+        self.assertEqual(b"# User guidance", guidance.read_bytes())
+        self.assertIsNone(self.receipt())
+        self.assertFalse((self.codex_home / "agents/project-doc-reader-tool.py").exists())
+
+    def test_retired_reader_drift_fails_before_plugin_mutation(self) -> None:
         manifest = self.seed_released_reader()
-        unowned = self.codex_home / "agents/project-doc-reader-protocol.py"
+        owned = self.codex_home / "agents/project-doc-reader-tool.py"
         before = manifest.read_bytes()
         self.fake.installed("hukuhaka-worklog")
-        for content in (b"personal helper\n", b""):
+        for content in (b"edited helper\n", b""):
             with self.subTest(content=content):
-                unowned.write_bytes(content)
-                with self.assertRaisesRegex(DriftError, "unmanaged.*resource"):
-                    self.installer().install(["hukuhaka-engineering-plan", "project-doc-reader"])
+                owned.write_bytes(content)
+                with self.assertRaisesRegex(DriftError, "managed project-doc-reader files changed"):
+                    self.installer().install(["hukuhaka-engineering-plan"])
                 self.assertEqual(["hukuhaka-worklog"], [p["name"] for p in self.fake.plugins])
                 self.assertFalse(any(c[1:3] in (("plugin", "add"), ("plugin", "remove")) for c in self.fake.calls))
                 self.assertEqual(before, manifest.read_bytes())
-                self.assertEqual(content, unowned.read_bytes())
+                self.assertEqual(content, owned.read_bytes())
 
     def test_resource_manifest_rejects_duplicate_and_unknown_owned_paths(self) -> None:
         manifest_path = self.seed_released_reader()

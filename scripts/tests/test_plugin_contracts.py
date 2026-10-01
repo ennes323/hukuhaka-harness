@@ -52,6 +52,23 @@ class OpenAiYamlTests(unittest.TestCase):
 
 
 class HookAndManifestPathTests(unittest.TestCase):
+    def test_host_hook_events_and_root_variables_are_isolated(self) -> None:
+        import json
+        with tempfile.TemporaryDirectory() as temp_name:
+            plugin = Path(temp_name) / "plugin"
+            hook = plugin / "hooks/claude.json"
+            hook.parent.mkdir(parents=True)
+            (plugin / "script.py").write_text("# helper", encoding="utf-8")
+            hook.write_text(json.dumps({"hooks": {"PostToolUseFailure": [{"hooks": [{
+                "type": "command", "command": 'python3 "${CLAUDE_PLUGIN_ROOT}/script.py"'
+            }]}]}}), encoding="utf-8")
+            errors: list[str] = []
+            plugin_contracts.validate_hook_file(hook, {"claude"}, errors)
+            self.assertEqual([], errors)
+            plugin_contracts.validate_hook_file(hook, {"codex"}, errors)
+            self.assertTrue(any("unsupported" in error for error in errors))
+            self.assertTrue(any("another host" in error for error in errors))
+
     def test_rejects_unknown_event_invalid_timeout_and_missing_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             plugin = Path(temp_name) / "plugin"

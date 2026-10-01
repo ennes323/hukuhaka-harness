@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-project-docs",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Find governing project documents, assess documentation impact, and maintain an optional repository documentation index.",
   "author": {
     "name": "hukuhaka"
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "Hukuhaka Project Docs",
     "shortDescription": "Find project context and keep documentation aligned.",
-    "longDescription": "Find relevant project contracts and checks, review documentation impact, carry authorized documentation updates through verification, and maintain an optional project-docs.json index. Direct workflows work without an index or Reader.",
+    "longDescription": "Find the project documents and checks relevant to your task, identify needed documentation changes, and make and verify authorized updates. Maintain a project-docs.json index when useful; document lookup and review work without one.",
     "developerName": "hukuhaka",
     "category": "Developer Tools",
     "capabilities": [

@@ -215,25 +215,25 @@ class InstallerSelectionTests(unittest.TestCase):
                 },
                 {
                     "hukuhaka-engineering-plan": "0.0.9",
-                    "hukuhaka-worklog": "0.5.0",
+                    "hukuhaka-worklog": "0.5.1",
                 },
             )
         )
 
         self.assertEqual(
-            "not installed → 0.8.0",
+            "not installed → 0.8.1",
             summary["hukuhaka-report-planner"],
         )
         self.assertEqual(
-            "0.0.9 → 0.3.0",
+            "0.0.9 → 0.3.1",
             summary["hukuhaka-engineering-plan"],
         )
         self.assertEqual(
-            "0.5.0 (same version)",
+            "0.5.1 (same version)",
             summary["hukuhaka-worklog"],
         )
         self.assertEqual(
-            "unknown → 0.1.1",
+            "unknown → 0.1.2",
             summary["hukuhaka-uiux-foundation"],
         )
         self.assertNotIn("agents-md", summary)
@@ -350,14 +350,24 @@ class InstallerSelectionTests(unittest.TestCase):
              mock.patch("scripts.install.main.shutil.which", return_value=None):
             self.assertEqual(1, installer.interactive())
 
-    def test_claude_host_is_rejected(self) -> None:
-        with self.assertRaises(SystemExit):
-            self.installer(
-                "claude",
-                "install",
-                "--recommended",
-                "--yes",
-            )
+    def test_claude_host_defaults_exclude_codex_specialists(self) -> None:
+        installer = self.installer("claude", "install", "--recommended", "--yes")
+        self.assertEqual({"claude-md", "hukuhaka-worklog"}, set(installer._automation_components("claude")))
+        with self.assertRaises(InstallerError):
+            installer._validate_components("claude", ["result-runner"])
+
+    def test_unavailable_claude_does_not_block_codex_management(self) -> None:
+        installer = self.installer()
+        claude = mock.Mock()
+        claude.require_cli.side_effect = InstallerError("unsupported version", host="claude")
+        with mock.patch.object(installer, "_tty_available", return_value=True), \
+             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch.object(installer, "_adapter", return_value=claude), \
+             mock.patch.object(installer, "_host_version", return_value="test"), \
+             mock.patch.object(installer, "_current_state", return_value=HostComponentState(set(), {})), \
+             mock.patch("scripts.install.main.prompt_install_plan", return_value=[]) as picker:
+            self.assertEqual(0, installer.interactive())
+        self.assertEqual(["codex"], [section["host"] for section in picker.call_args.kwargs["sections"]])
 
     def test_legacy_selection_flags_are_removed(self) -> None:
         with self.assertRaises(SystemExit):
@@ -431,7 +441,7 @@ class InstallerSelectionTests(unittest.TestCase):
             return HostResult("codex", "success")
 
         with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch("scripts.install.main.shutil.which", side_effect=lambda host: "/fake" if host == "codex" else None), \
              mock.patch.object(
                  installer,
                  "_current_state",
@@ -479,7 +489,7 @@ class InstallerSelectionTests(unittest.TestCase):
             return HostResult("codex", "success")
 
         with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch("scripts.install.main.shutil.which", side_effect=lambda host: "/fake" if host == "codex" else None), \
              mock.patch.object(
                  installer,
                  "_current_state",
@@ -539,7 +549,7 @@ class InstallerSelectionTests(unittest.TestCase):
             return HostResult("codex", "success")
 
         with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch("scripts.install.main.shutil.which", side_effect=lambda host: "/fake" if host == "codex" else None), \
              mock.patch.object(
                  installer,
                  "_current_state",
@@ -609,7 +619,7 @@ class InstallerSelectionTests(unittest.TestCase):
             return HostResult("codex", "success")
 
         with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch("scripts.install.main.shutil.which", side_effect=lambda host: "/fake" if host == "codex" else None), \
              mock.patch.object(
                  installer,
                  "_current_state",
@@ -658,7 +668,7 @@ class InstallerSelectionTests(unittest.TestCase):
         config_editor.apply.side_effect = InstallerError("config failed")
 
         with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch("scripts.install.main.shutil.which", side_effect=lambda host: "/fake" if host == "codex" else None), \
              mock.patch.object(
                  installer,
                  "_current_state",
@@ -701,7 +711,7 @@ class InstallerSelectionTests(unittest.TestCase):
         config_editor.plan.return_value = config_plan
 
         with mock.patch.object(installer, "_tty_available", return_value=True), \
-             mock.patch("scripts.install.main.shutil.which", return_value="/fake"), \
+             mock.patch("scripts.install.main.shutil.which", side_effect=lambda host: "/fake" if host == "codex" else None), \
              mock.patch.object(
                  installer,
                  "_current_state",
@@ -1050,6 +1060,40 @@ class CodexGuidanceTests(unittest.TestCase):
 
 
 class PlainTerminalSelectionTests(unittest.TestCase):
+    def test_both_hosts_require_explicit_target_selection(self) -> None:
+        sections = [{"host": host, "label": host.title(), "components": [],
+                     "selected": set(), "enabled": False} for host in ("codex", "claude")]
+        # Wrapping backwards reaches Exit then Install without selecting a host.
+        self.assertEqual([], prompt_install_plan(io.StringIO(), io.StringIO(), sections=sections,
+                                                  keys=("up", "up", "enter")))
+        selected = prompt_install_plan(io.StringIO(), io.StringIO(), sections=sections,
+                                       keys=("toggle", "up", "up", "enter"))
+        self.assertEqual(["codex"], [plan.host for plan in selected])
+
+    def test_scrolling_keeps_each_action_visible_in_small_terminal(self) -> None:
+        from scripts.install.terminal import _HostState, _rows, _render, CLEAR
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+            def fileno(self):
+                return 1
+        catalog = json.loads((ROOT / "components.json").read_text())
+        states = [_HostState(host, host.title(), "test", False,
+                            [c for c in catalog["components"] if host in c["hosts"]], set())
+                  for host in ("codex", "claude")]
+        rows = _rows(states)
+        for width, height in ((80, 24), (45, 16)):
+            for index, row in enumerate(rows):
+                if row[0] in {"header", "components-section", "settings-section", "reset-section"}:
+                    continue
+                output = Terminal()
+                with mock.patch("scripts.install.terminal.os.get_terminal_size", return_value=(width, height)):
+                    _render(output, states, rows, index)
+                lines = output.getvalue().removeprefix(CLEAR).splitlines()
+                self.assertLess(len(lines), height)
+                self.assertTrue(all(len(line) < width for line in lines))
+                self.assertEqual(1, sum(line.startswith("> ") for line in lines))
+
     def test_plugin_rows_show_target_versions_only(self) -> None:
         output = io.StringIO()
         prompt_install_plan(
@@ -1099,7 +1143,7 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "selected": {"planner"},
                 },
             ],
-            keys=("down", "down", "down", "down", "toggle", "down", "down", "enter"),
+            keys=("down", "down", "down", "down", "toggle", "down", "down", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
@@ -1134,7 +1178,7 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "selected": {"hukuhaka-report-planner"},
                 }
             ],
-            keys=("down", "down", "down", "toggle", "down", "down", "down", "enter"),
+            keys=("down", "down", "down", "toggle", "down", "down", "down", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
@@ -1167,7 +1211,7 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "context_status": "Codex/model defaults",
                 }
             ],
-            keys=("down", "down", "down", "toggle", "down", "down", "down", "enter"),
+            keys=("down", "down", "down", "toggle", "down", "down", "down", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))
@@ -1200,7 +1244,7 @@ class PlainTerminalSelectionTests(unittest.TestCase):
                     "agent_policy_status": "Codex defaults",
                 }
             ],
-            keys=("down", "down", "down", "toggle", "down", "down", "down", "enter"),
+            keys=("down", "down", "down", "toggle", "down", "down", "down", "down", "down", "down", "enter"),
         )
 
         self.assertEqual(1, len(plans))

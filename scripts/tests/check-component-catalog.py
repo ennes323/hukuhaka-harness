@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 
-HOSTS = ("codex",)
+NATIVE_HOSTS = ("codex", "claude")
+HOSTS = (*NATIVE_HOSTS, "paseo")
 
 
 def load_catalog(root: Path) -> dict:
@@ -22,10 +23,12 @@ def validate(root: Path, catalog: dict) -> int:
     if catalog.get("schemaVersion") != 1:
         errors.append("schemaVersion must be 1")
     marketplaces = catalog.get("marketplaces", {})
-    if set(marketplaces) != {"codex"}:
-        errors.append("marketplaces must contain only codex")
+    if set(marketplaces) != set(NATIVE_HOSTS):
+        errors.append("marketplaces must contain codex and claude")
     if marketplaces.get("codex") != "hukuhaka-harness":
         errors.append("Codex marketplace name must be hukuhaka-harness")
+    if marketplaces.get("claude") != "hukuhaka-plugin":
+        errors.append("Claude marketplace name must be hukuhaka-plugin")
     components = catalog.get("components", [])
     names = [component.get("name") for component in components]
     if len(names) != len(set(names)):
@@ -48,6 +51,7 @@ def validate(root: Path, catalog: dict) -> int:
             "feature",
             "template",
             "agent",
+            "profile",
         }:
             errors.append(f"{name}: unsupported kind")
         if component.get("lifecycle") not in {"supported", "deprecated"}:
@@ -56,7 +60,16 @@ def validate(root: Path, catalog: dict) -> int:
             errors.append(f"{name}: deprecated components cannot be default-on")
         hosts = component.get("hosts", {})
         if not hosts or any(host not in HOSTS for host in hosts):
-            errors.append(f"{name}: hosts must contain only codex")
+            errors.append(f"{name}: hosts must contain only supported hosts")
+        if component.get("kind") == "profile":
+            if set(hosts) != {"paseo"}:
+                errors.append(f"{name}: profiles belong only to Paseo")
+            if hosts.get("paseo") != {}:
+                errors.append(f"{name}: profiles use source paths, not native manifests")
+            if component.get("path") != f"templates/paseo/{name}.json":
+                errors.append(f"{name}: profile path must match its catalog identity")
+        elif "paseo" in hosts:
+            errors.append(f"{name}: Paseo supports profile components only")
         versions: set[str] = set()
         for host, metadata in hosts.items():
             manifest = metadata.get("manifest")
@@ -118,31 +131,38 @@ def validate(root: Path, catalog: dict) -> int:
 
     discovered = {
         path.resolve()
-        for path in root.glob("marketplace/*/.codex-plugin/plugin.json")
+        for host in NATIVE_HOSTS
+        for path in root.glob(f"marketplace/*/.{host}-plugin/plugin.json")
     }
     for path in sorted(discovered - known_manifests):
         errors.append(f"uncatalogued manifest: {path.relative_to(root)}")
-    for path in sorted(root.glob("marketplace/*/.claude-plugin/plugin.json")):
-        errors.append(f"unsupported Claude manifest: {path.relative_to(root)}")
 
-    marketplace_path = root / ".agents/plugins/marketplace.json"
-    try:
-        marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        errors.append(f"invalid Codex marketplace: {exc}")
-    else:
-        if marketplace.get("name") != marketplaces.get("codex"):
-            errors.append("Codex marketplace name differs from component catalog")
-        exposed = {entry.get("name") for entry in marketplace.get("plugins", [])}
+    for host, location in (("codex", ".agents/plugins/marketplace.json"), ("claude", ".claude-plugin/marketplace.json")):
+        marketplace_path = root / location
+        try:
+            marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"invalid {host} marketplace: {exc}")
+            continue
+        if marketplace.get("name") != marketplaces.get(host):
+            errors.append(f"{host} marketplace name differs from component catalog")
+        entries = marketplace.get("plugins", [])
+        exposed = {entry.get("name") for entry in entries}
         expected = {
-            component["name"]
-            for component in components
+            component["name"] for component in components
             if component.get("kind") == "plugin"
             and component.get("lifecycle") == "supported"
-            and "codex" in component.get("hosts", {})
+            and host in component.get("hosts", {})
         }
-        if exposed != expected:
-            errors.append(f"Codex marketplace entries {sorted(exposed)} != catalog {sorted(expected)}")
+        if exposed != expected or len(entries) != len(exposed):
+            errors.append(f"{host} marketplace entries {sorted(exposed)} != catalog {sorted(expected)}")
+        for entry in entries:
+            expected_source = f"./marketplace/{entry.get('name')}"
+            source = entry.get("source")
+            if host == "codex":
+                source = source.get("path") if isinstance(source, dict) and source.get("source") == "local" else None
+            if source != expected_source:
+                errors.append(f"{host} marketplace {entry.get('name')}: source must be {expected_source}")
 
     if errors:
         for error in errors:

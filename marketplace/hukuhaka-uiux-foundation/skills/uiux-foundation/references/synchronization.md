@@ -1,37 +1,57 @@
 # Design system, mockup, and application synchronization
 
-Use this reference whenever more than one UI artifact is relevant.
+Use this reference when more than one design artifact is relevant or a change may affect other consumers. Work with the artifacts the project actually has; this guidance does not require creating all three.
 
-## Ownership
+## Ownership and authority
 
-| Artifact | Owns | Does not prove |
+Use the project's declared authority for each decision. The following responsibility model helps identify a conflict; an explicit project contract can assign ownership differently.
+
+| Artifact | Typical responsibility | Evidence limit |
 |---|---|---|
-| Design system | Reusable foundations, semantic roles, components, variants, and interaction rules | The correct composition of every screen |
-| Mockup | Screen hierarchy, composition, emphasis, content shape, and visual intent | Runtime behavior, complete states, accessibility, or implementation feasibility |
-| Application | Working behavior, data and interaction states, responsive execution, and accessible implementation | That an observed one-off value is an intentional system rule |
+| Design system | Reusable visual and interaction rules | Does not determine every screen composition |
+| Mockup | Screen hierarchy, composition, and visual intent | Does not prove runtime behavior or complete state coverage |
+| Application | Working behavior and accessible, responsive execution | Does not prove that every existing value is an intentional design rule |
 
-When no explicit design-system artifact exists, current tokens, shared components, and repeated implementation may be de facto evidence. Treat them as observed authority, not automatically as a well-designed system.
+When a separate system document is absent, existing shared implementation can provide evidence of conventions. Distinguish that observed practice from an approved design decision. A newer file or a more polished screenshot is not automatically authoritative.
 
-## Synchronization loop
+## Comparing a difference
 
-1. Identify the decision and its current owner.
-2. Compare the same state, content, theme, and viewport across available artifacts.
-3. Classify a difference as:
-   - `intentional`: an explained artifact-specific distinction;
-   - `missing`: the owner has not recorded a required decision;
-   - `stale`: another artifact reflects an older valid decision;
-   - `accidental`: implementation or mockup diverged without a product decision;
-   - `unresolved`: evidence cannot determine the intended owner or value.
-4. Change or propose the owning artifact first, then propagate the decision to dependent artifacts.
-5. Verify the affected consumers and record any intentional exception.
+Compare the same content, state, theme, and viewport before interpreting a mismatch. Confirm that fonts and assets loaded and that the compared versions correspond to the same intended change. A pixel difference can arise from rendering conditions rather than a design decision.
 
-Do not average conflicting values, choose whichever looks newer, or silently make the application match a screenshot. A difference may reveal that the system should change, but the application is not the place to hide that decision.
+Distinguish an intentional variation, a missing decision, an outdated artifact, and accidental divergence. Keep the result unresolved when available evidence cannot determine intent. Do not average conflicting values or silently choose whichever artifact is easiest to edit.
 
-## Practical comparison
+For spatial problems, compare rendered relationships and use computed geometry where exact alignment matters. For interaction differences, compare actual behavior; a static mockup cannot establish keyboard or asynchronous behavior.
 
-Use a compact ledger when several decisions differ:
+## Change impact and propagation
 
-| Decision | Owner | Expected | Observed | Classification | Action |
-|---|---|---|---|---|---|
+Find the owner of the changed decision before propagating it. A screen-specific composition adjustment may remain local, while a shared state or token change can affect many consumers. Identify the relevant consumers without treating every visual edit as a system-wide migration.
 
-Compare rendered mockup and application at the same viewport when spatial judgment matters. Normalize content, state, theme, font loading, and browser zoom before interpreting pixel differences. Prefer computed geometry and DOM state for exact alignment; use screenshots or overlays for relationships that need visual judgment.
+```text
+WHEN a change affects more than one artifact:
+    Establish the intended decision and its owner.
+    Update or propose the owner-level decision within the authorized scope.
+    Carry that decision to the affected dependent artifacts.
+    Verify the affected consumers and identify remaining differences.
+```
+
+If the request is review-only, report the proposed correction and ownership without editing. If a material choice remains outside existing authorization, show the smallest useful comparison and ask for that decision. Continue independent authorized work.
+
+## Mappings and generated artifacts
+
+Use existing mappings between design components, tokens, and implementation where they are available. Verify that a mapping points to the actual component and variant rather than a similarly named artifact.
+
+For example, Figma Code Connect connects design components to code representations. Such a connection can improve traceability, but does not itself prove that a running screen is current or visually correct. It is an optional project tool, not a dependency of this Skill. [Code Connect](https://developers.figma.com/docs/code-connect/)
+
+When generated styles or documentation are involved, establish the upstream authoring source and preserve the generation direction. It may be a design file, a repository asset, or another declared source; do not infer ownership from the output you happen to be editing. Token references can carry changes into consumers, but the existence of an alias does not prove every consuming artifact was regenerated. Inspect actual outputs before claiming propagation. [DTCG token references](https://www.designtokens.org/tr/2025.10/format/)
+
+## Exceptions and completion
+
+Keep intentional differences explainable by the artifact or use case that needs them. A mockup may omit implementation detail, and platform-specific behavior can differ without being drift. A mismatch that hides an unmade shared decision is not a justified exception.
+
+For several differences, a compact record of decision, owner, observed mismatch, and disposition can help. Do not require a ledger for one obvious correction. If a dependent artifact is inaccessible or outside scope, identify what remains out of sync and the consequence; do not imply full parity.
+
+Use [verification](verification.md) to match completion claims to inspected evidence.
+
+## Basis and limits
+
+The ownership model and synchronization procedure are this Skill's guidance for reasoning about artifact boundaries. The external sources support traceability mechanisms; they do not establish which artifact should win a particular project conflict.

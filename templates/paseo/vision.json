@@ -1,0 +1,8 @@
+{
+  "name": "vision",
+  "provider": "codex",
+  "model": "gpt-6.1-sol",
+  "modeId": "auto",
+  "thinkingOptionId": "high",
+  "notes": "Use for analysis of existing images, screenshots, charts, diagrams, visual comparisons, and FP/FN patterns; choose designer for creating visual structure."
+}

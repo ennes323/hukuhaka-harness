@@ -1,0 +1,8 @@
+{
+  "name": "advisor-claude",
+  "provider": "claude",
+  "model": "claude-opus-5-5",
+  "modeId": "default",
+  "thinkingOptionId": "high",
+  "notes": "Use for an independent second opinion, especially when Main uses Codex."
+}

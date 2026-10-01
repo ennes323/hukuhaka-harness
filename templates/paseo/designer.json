@@ -1,0 +1,8 @@
+{
+  "name": "designer",
+  "provider": "claude",
+  "model": "claude-opus-5-5",
+  "modeId": "default",
+  "thinkingOptionId": "high",
+  "notes": "Use for UI/UX, layouts, interaction flows, visual hierarchy, design critique, and interface prototypes; not general software or backend architecture."
+}

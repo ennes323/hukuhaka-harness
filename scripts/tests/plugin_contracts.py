@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_PATH_FIELDS = ("skills", "hooks", "mcpServers", "apps")
+PLUGIN_PATH_FIELDS = ("skills", "hooks", "mcpServers", "apps", "agents")
 CODEX_HOOK_EVENTS = {
     "PermissionRequest",
     "PostCompact",
@@ -24,8 +24,14 @@ CODEX_HOOK_EVENTS = {
     "SubagentStop",
     "UserPromptSubmit",
 }
+CLAUDE_HOOK_EVENTS = {
+    "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+    "PostToolUseFailure", "PermissionRequest", "Notification", "Stop",
+    "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
+    "TeammateIdle", "TaskCompleted", "InstructionsLoaded",
+}
 NO_MATCHER_EVENTS = {"Stop", "UserPromptSubmit"}
-ROOT_PLACEHOLDER_RE = re.compile(r"\$\{PLUGIN_ROOT\}/([^\s\"']+)")
+ROOT_PLACEHOLDER_RE = re.compile(r"\$\{(?:PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}/([^\s\"']+)")
 
 
 class ContractError(ValueError):
@@ -43,6 +49,34 @@ def load_json(path: Path, errors: list[str]) -> object | None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         errors.append(f"{path}: invalid JSON: {exc}")
         return None
+
+
+def validate_profile(path: Path, name: str) -> list[str]:
+    """Check deployable defaults without asserting live provider capabilities."""
+    errors: list[str] = []
+    data = load_json(path, errors)
+    if not isinstance(data, dict):
+        errors.append(f"{path}: profile must be an object")
+        return errors
+    required = {"name", "provider", "model", "modeId", "notes"}
+    allowed = required | {"thinkingOptionId", "featureValues"}
+    require(required <= set(data) <= allowed,
+            f"{path}: profile fields must be launch defaults without runtime IDs", errors)
+    for key in required | ({"thinkingOptionId"} & set(data)):
+        value = data.get(key)
+        require(isinstance(value, str) and bool(value.strip()),
+                f"{path}: {key} must be a non-empty string", errors)
+    require(data.get("name") == name, f"{path}: profile name differs from catalog", errors)
+    features = data.get("featureValues")
+    if "featureValues" in data:
+        require(isinstance(features, dict) and all(
+            isinstance(key, str) and bool(key) and isinstance(value, bool)
+            for key, value in features.items()),
+            f"{path}: featureValues must map feature names to booleans", errors)
+    require(re.search(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+                      json.dumps(data), re.IGNORECASE) is None,
+            f"{path}: source defaults must not contain UUIDs", errors)
+    return errors
 
 
 def parse_scalar(raw: str, *, line_number: int) -> object:
@@ -168,8 +202,8 @@ def validate_hook_file(path: Path, hosts: set[str], errors: list[str]) -> None:
     require(isinstance(groups, dict) and bool(groups), f"{path}: hooks must be a non-empty object", errors)
     if not isinstance(groups, dict):
         return
-    require(hosts == {"codex"}, f"{path}: hooks must be Codex-only", errors)
-    allowed_events = CODEX_HOOK_EVENTS
+    require(len(hosts) == 1 and hosts <= {"codex", "claude"}, f"{path}: hooks must belong to one supported host", errors)
+    allowed_events = CODEX_HOOK_EVENTS if hosts == {"codex"} else CLAUDE_HOOK_EVENTS
     for event, matcher_groups in groups.items():
         require(event in allowed_events, f"{path}: unsupported {sorted(hosts)} hook event {event}", errors)
         require(isinstance(matcher_groups, list) and bool(matcher_groups), f"{path}: {event} must be a non-empty array", errors)
@@ -201,8 +235,8 @@ def validate_hook_file(path: Path, hosts: set[str], errors: list[str]) -> None:
                     require(isinstance(timeout, int) and timeout > 0, f"{handler_label}: timeout must be positive", errors)
                 if isinstance(command, str):
                     require(
-                        "${CLAUDE_PLUGIN_ROOT}" not in command,
-                        f"{handler_label}: retired Claude plugin-root variable is not allowed",
+                        ("${CLAUDE_PLUGIN_ROOT}" not in command if hosts == {"codex"} else "${PLUGIN_ROOT}" not in command),
+                        f"{handler_label}: plugin-root variable belongs to another host",
                         errors,
                     )
                     for match in ROOT_PLACEHOLDER_RE.finditer(command):
@@ -217,13 +251,11 @@ def validate_repository(root: Path = ROOT) -> list[str]:
     if not isinstance(catalog, dict):
         return errors
 
-    for retired_manifest in sorted(root.glob("marketplace/*/.claude-plugin/plugin.json")):
-        errors.append(
-            f"retired Claude manifest remains: {retired_manifest.relative_to(root)}"
-        )
-
     hook_hosts: dict[Path, set[str]] = {}
     for component in catalog.get("components", []):
+        if isinstance(component, dict) and component.get("kind") == "profile":
+            errors.extend(validate_profile(root / str(component.get("path", "")),
+                                           str(component.get("name", ""))))
         if not isinstance(component, dict) or component.get("kind") != "plugin":
             continue
         component_name = component.get("name")
@@ -244,12 +276,19 @@ def validate_repository(root: Path = ROOT) -> list[str]:
                 value = manifest.get(key)
                 if value is None:
                     continue
-                require(isinstance(value, str), f"{label}: {key} must be a path string in this repository", errors)
-                if not isinstance(value, str):
-                    continue
-                resolved = resolve_plugin_path(plugin_root, value, f"{label}: {key}", errors)
-                if key == "hooks" and resolved is not None and resolved.is_file():
-                    hook_hosts.setdefault(resolved, set()).add(host)
+                values = value if key == "agents" and host == "claude" and isinstance(value, list) else [value]
+                for item in values:
+                    require(isinstance(item, str), f"{label}: {key} must contain path strings", errors)
+                    if not isinstance(item, str):
+                        continue
+                    resolved = resolve_plugin_path(plugin_root, item, f"{label}: {key}", errors)
+                    if key == "agents":
+                        require(host == "claude", f"{label}: packaged agents belong only to Claude", errors)
+                        require(resolved is not None and resolved.is_file() and resolved.suffix == ".md",
+                                f"{label}: Claude agents must be Markdown file paths", errors)
+                    if key == "hooks" and resolved is not None and resolved.is_file():
+                        require(item == f"./hooks/{host}.json", f"{label}: hook declaration must use its host-specific file", errors)
+                        hook_hosts.setdefault(resolved, set()).add(host)
             if host == "codex":
                 interface = manifest.get("interface")
                 require(isinstance(interface, dict), f"{label}: Codex interface metadata is required", errors)
@@ -270,13 +309,7 @@ def validate_repository(root: Path = ROOT) -> list[str]:
         if not plugin_root.is_dir():
             continue
         default_hooks = plugin_root / "hooks" / "hooks.json"
-        if default_hooks.is_file():
-            hosts = {
-                host
-                for host, manifest_name in (("codex", ".codex-plugin"),)
-                if (plugin_root / manifest_name / "plugin.json").is_file()
-            }
-            hook_hosts.setdefault(default_hooks.resolve(), set()).update(hosts)
+        require(not default_hooks.exists(), f"{default_hooks}: shared default hook discovery is forbidden", errors)
 
     for hook_path, hosts in hook_hosts.items():
         validate_hook_file(hook_path, hosts, errors)
@@ -303,7 +336,7 @@ def main() -> int:
         for error in errors:
             print(f"plugin-contracts: {error}", file=sys.stderr)
         return 1
-    print("plugin-contracts: manifests, skill metadata, hooks, and engineering-plan are consistent")
+    print("plugin-contracts: manifests, skill metadata, hooks, and profile defaults are consistent")
     return 0
 
 

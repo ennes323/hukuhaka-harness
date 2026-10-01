@@ -1,0 +1,8 @@
+{
+  "name": "worker",
+  "provider": "codex",
+  "model": "gpt-6.1-sol",
+  "modeId": "auto-review",
+  "thinkingOptionId": "high",
+  "notes": "Use for clearly scoped implementation, modification, testing, debugging, or benchmark execution after the main agent has determined the required outcome."
+}

@@ -1,0 +1,18 @@
+{
+  "name": "hukuhaka-project-docs",
+  "version": "0.2.1",
+  "description": "Find governing project documents, assess documentation impact, and maintain an optional repository documentation index.",
+  "author": {
+    "name": "hukuhaka"
+  },
+  "repository": "https://github.com/hukuhaka/hukuhaka-harness",
+  "license": "MIT",
+  "keywords": [
+    "documentation",
+    "project-context",
+    "manifest",
+    "audit",
+    "claude-code"
+  ],
+  "skills": "./skills/"
+}

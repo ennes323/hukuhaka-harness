@@ -22,7 +22,7 @@ from typing import Dict, Iterable, Mapping, Optional, Sequence
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.install.state import InstallState
+from scripts.install.state import InstallState, encode_state
 
 
 def receipt(home: Path, name: str):
@@ -41,8 +41,6 @@ def check_operation(home: Path, version: str, status: str = "success") -> None:
 
 SCOUT_BEGIN = "<!-- hukuhaka-evidence-scout:begin -->"
 SCOUT_END = "<!-- hukuhaka-evidence-scout:end -->"
-READER_BEGIN = "<!-- hukuhaka-project-doc-reader:begin -->"
-READER_END = "<!-- hukuhaka-project-doc-reader:end -->"
 
 
 class E2EFailure(RuntimeError):
@@ -387,61 +385,27 @@ def scenario_source_transition(
     check_operation(codex_home(root), version)
 
 
-def scenario_project_docs_pair(source: Path, version: str, root: Path) -> None:
+def scenario_project_docs_plugin(source: Path, version: str, root: Path) -> None:
     environment(root)
     home = codex_home(root)
     routing = home / "AGENTS.md"
     sentinel = b"# User sentinel\n\nPreserve this byte-for-byte.\n"
     routing.write_bytes(sentinel)
-    components = ("hukuhaka-project-docs", "project-doc-reader")
-
-    install(source, version, root, components=components)
-    agent = home / "agents" / "project-doc-reader.toml"
-    helper = home / "agents" / "project-doc-reader-tool.py"
-    manifest_path = home / ".hukuhaka-project-doc-reader-manifest.json"
-    config = home / "config.toml"
-    for path in (agent, helper, routing, config):
-        if not path.is_file():
-            raise E2EFailure("missing Project Docs pair artifact: {}".format(path))
+    install(source, version, root, components=("hukuhaka-project-docs",))
     if plugin_names(root, source) != {"hukuhaka-project-docs"}:
-        raise E2EFailure("Project Docs pair installed an unexpected plugin set")
-    if agent.read_bytes() != (source / "agents" / "project-doc-reader.toml").read_bytes():
-        raise E2EFailure("installed project-doc-reader differs from source")
-    helper_source = source / "marketplace" / "hukuhaka-project-docs" / "skills" / "project-docs" / "scripts" / "project_docs.py"
-    if helper.read_bytes() != helper_source.read_bytes():
-        raise E2EFailure("installed project-doc-reader helper differs from source")
-    routing_text = routing.read_text(encoding="utf-8")
+        raise E2EFailure("Project Docs installed an unexpected plugin set")
     if routing.read_bytes() != sentinel:
-        raise E2EFailure("Project Doc Reader install changed the user sentinel")
-    if READER_BEGIN in routing_text or READER_END in routing_text:
-        raise E2EFailure("Project Doc Reader installed obsolete routing")
-    manifest = receipt(home, "project-doc-reader")
-    if manifest.get("schemaVersion") != 4 or manifest.get("version") != version:
-        raise E2EFailure("Project Doc Reader manifest has the wrong schema/version")
-    resources = manifest.get("resources", [])
-    expected_resources = ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
-                          "agents/project-doc-reader/reader-request-v2.schema.json",
-                          "agents/project-doc-reader/reader-response-v2.schema.json"]
-    if [item.get("target") for item in resources] != expected_resources:
-        raise E2EFailure("Project Doc Reader manifest does not own its protocol resources")
-    resource_paths = tuple(home / target for target in expected_resources)
-    if not all(path.is_file() for path in resource_paths):
-        raise E2EFailure("Project Doc Reader resource is missing")
-    managed = (agent, routing, manifest_path, config) + resource_paths
-    before = snapshot(managed)
-    components_before = component_receipts(home)
-
-    install(source, version, root, components=components)
-    if snapshot(managed) != before or component_receipts(home) != components_before:
-        raise E2EFailure("repeated Project Docs pair install changed managed files")
-
+        raise E2EFailure("Project Docs install changed user guidance")
+    if receipt(home, "project-doc-reader") is not None:
+        raise E2EFailure("Project Docs installed retired Reader state")
+    rejected = install(source, version, root, components=("project-doc-reader",),
+                       expect_success=False)
+    if "unknown Codex component 'project-doc-reader'" not in rejected.stderr:
+        raise E2EFailure("retired Reader selection was not rejected")
+    install(source, version, root, components=("hukuhaka-project-docs",))
     install(source, version, root, action="uninstall")
-    if plugin_names(root, source):
-        raise E2EFailure("Project Docs pair uninstall left a plugin installed")
-    if agent.exists() or any(path.exists() for path in resource_paths) or manifest_path.exists() or receipt(home, "project-doc-reader") is not None:
-        raise E2EFailure("Project Docs pair uninstall left Reader state")
-    if routing.read_bytes() != sentinel:
-        raise E2EFailure("Project Docs pair uninstall did not restore the sentinel")
+    if plugin_names(root, source) or routing.read_bytes() != sentinel:
+        raise E2EFailure("Project Docs uninstall changed plugin or user guidance")
 
 
 def scenario_legacy(source: Path, version: str, root: Path, *, foreign: bool) -> None:
@@ -479,33 +443,47 @@ def seed_historical_reader(source: Path, root: Path) -> Path:
     return home
 
 
-def scenario_reader_upgrade(source: Path, version: str, root: Path) -> None:
+def scenario_reader_v1_cleanup(source: Path, version: str, root: Path) -> None:
     home = seed_historical_reader(source, root)
-    components = ("hukuhaka-project-docs", "project-doc-reader")
-    install(source, version, root, components=components)
-    manifest_path = home / ".hukuhaka-project-doc-reader-manifest.json"
-    manifest = receipt(home, "project-doc-reader")
-    if manifest_path.exists():
-        raise E2EFailure("historical Reader receipt was not migrated")
-    expected = {
-        "agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
+    receipt_path = home / ".hukuhaka-project-doc-reader-manifest.json"
+    install(source, version, root, components=("hukuhaka-project-docs",))
+    if receipt_path.exists() or receipt(home, "project-doc-reader") is not None:
+        raise E2EFailure("historical one-helper Reader receipt survived retirement")
+    for target in ("agents/project-doc-reader.toml", "agents/project-doc-reader-tool.py"):
+        if (home / target).exists():
+            raise E2EFailure("historical one-helper Reader file survived retirement")
+
+
+def scenario_reader_v2_cleanup(source: Path, version: str, root: Path) -> None:
+    home = seed_historical_reader(source, root)
+    receipt_path = home / ".hukuhaka-project-doc-reader-manifest.json"
+    manifest = json.loads(receipt_path.read_text(encoding="utf-8"))
+    targets = (
+        "agents/project-doc-reader-protocol.py",
         "agents/project-doc-reader/reader-request-v2.schema.json",
         "agents/project-doc-reader/reader-response-v2.schema.json",
+    )
+    # Cleanup uses receipt hashes, not executable protocol contents. Synthetic
+    # owned bytes keep this lifecycle scenario independent of private eval data.
+    for target in targets:
+        target_path = home / target
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(("Retired resource: " + target + "\n").encode("utf-8"))
+        manifest["resources"].append({"target": target, "hash": sha256(target_path)})
+    state = InstallState(home)
+    data = state.read()
+    data["components"]["project-doc-reader"] = {
+        "kind": "agent", "version": "1.2.0", "installer_version": "1.2.0",
+        "installed_at": "unknown", "provenance": "legacy", "receipt": manifest,
     }
-    if manifest["version"] != version or {item["target"] for item in manifest["resources"]} != expected:
-        raise E2EFailure("historical Reader upgrade did not adopt all current resources")
-    for item in manifest["resources"]:
-        if sha256(home / item["target"]) != item["hash"]:
-            raise E2EFailure("upgraded Reader resource does not match its receipt")
-    agent = home / "agents/project-doc-reader.toml"
-    if agent.read_bytes() != (source / "agents/project-doc-reader.toml").read_bytes():
-        raise E2EFailure("historical Reader agent was not upgraded")
-    observed = (agent, manifest_path) + tuple(home / target for target in sorted(expected))
-    before = snapshot(observed)
-    receipt_before = receipt(home, "project-doc-reader")
-    install(source, version, root, components=components)
-    if snapshot(observed) != before or receipt(home, "project-doc-reader") != receipt_before:
-        raise E2EFailure("historical Reader upgrade is not stable on retry")
+    state.path.write_bytes(encode_state(data))
+    receipt_path.unlink()
+    install(source, version, root, components=("hukuhaka-project-docs",))
+    if receipt(home, "project-doc-reader") is not None:
+        raise E2EFailure("four-resource Reader receipt survived retirement")
+    for target in (manifest["agentTarget"], *(item["target"] for item in manifest["resources"])):
+        if (home / target).exists():
+            raise E2EFailure("four-resource Reader file survived retirement: " + target)
 
 
 def scenario_reader_deselect(source: Path, version: str, root: Path) -> None:
@@ -674,8 +652,9 @@ def main() -> int:
         scenario_fresh(source, version, root / "fresh")
         scenario_source_transition(source, version, root / "remote-to-local", remote=True)
         scenario_source_transition(source, version, root / "local-to-local", remote=False)
-        scenario_project_docs_pair(source, version, root / "project-docs-pair")
-        scenario_reader_upgrade(source, version, root / "reader-upgrade")
+        scenario_project_docs_plugin(source, version, root / "project-docs-plugin")
+        scenario_reader_v1_cleanup(source, version, root / "reader-v1-cleanup")
+        scenario_reader_v2_cleanup(source, version, root / "reader-v2-cleanup")
         scenario_reader_deselect(source, version, root / "reader-deselect")
         scenario_reader_reset_retry(source, version, root / "reader-reset-retry")
         scenario_legacy(source, version, root / "legacy-owned", foreign=False)

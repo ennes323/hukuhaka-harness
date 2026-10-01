@@ -5,6 +5,12 @@
   },
   "plugins": [
     {
+      "name": "hukuhaka-paseo",
+      "source": {"source": "local", "path": "./marketplace/hukuhaka-paseo"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    },
+    {
       "name": "hukuhaka-report-planner",
       "source": {
         "source": "local",

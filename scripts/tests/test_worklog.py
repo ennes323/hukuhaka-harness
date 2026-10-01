@@ -58,6 +58,63 @@ class WorklogScriptTests(unittest.TestCase):
         self.assertIn("Only the primary agent changes Worklog state", agents)
         self.assertFalse((self.root / "CLAUDE.md").exists())
 
+    def test_claude_setup_uses_agents_without_masking_ancestor_rules(self) -> None:
+        parent = self.root / "AGENTS.md"
+        parent.write_text("# Parent rules\nPreserve inherited instructions.\n")
+        project = self.root / "project"
+        project.mkdir()
+        WORKLOG.setup(project, "claude")
+        first = (project / "AGENTS.md").read_text()
+        WORKLOG.setup(project, "claude")
+        self.assertEqual(first, (project / "AGENTS.md").read_text())
+        self.assertIn("/hukuhaka-worklog:worklog", first)
+        self.assertFalse((project / "CLAUDE.md").exists())
+        self.assertEqual("# Parent rules\nPreserve inherited instructions.\n", parent.read_text())
+
+    def test_claude_setup_preserves_existing_claude_and_imports_local_agents_once(self) -> None:
+        agents = self.root / "AGENTS.md"
+        agents.write_text("# Common rules\n")
+        claude = self.root / "CLAUDE.md"
+        claude.write_text("# Claude rules\nKeep local instruction.\n")
+        WORKLOG.setup(self.root, "claude")
+        first = claude.read_text()
+        WORKLOG.setup(self.root, "claude")
+        self.assertEqual(first, claude.read_text())
+        self.assertEqual(1, first.count("@AGENTS.md"))
+        self.assertIn("Keep local instruction.", first)
+        self.assertEqual("# Common rules\n", agents.read_text())
+
+    def test_claude_setup_does_not_duplicate_existing_agents_import(self) -> None:
+        (self.root / "AGENTS.md").write_text("# Common rules\n")
+        claude = self.root / "CLAUDE.md"
+        claude.write_text("@AGENTS.md\n\nKeep this.\n")
+        WORKLOG.setup(self.root, "claude")
+        WORKLOG.setup(self.root, "claude")
+        self.assertEqual(1, claude.read_text().count("@AGENTS.md"))
+
+    def test_alternating_host_setup_keeps_shared_agents_guidance_unchanged(self) -> None:
+        WORKLOG.setup(self.root, "codex")
+        agents = self.root / "AGENTS.md"
+        original = agents.read_text()
+        WORKLOG.setup(self.root, "claude")
+        WORKLOG.setup(self.root, "codex")
+        self.assertEqual(original, agents.read_text())
+        self.assertIn(WORKLOG.CODEX_INVOCATION, original)
+        self.assertIn(WORKLOG.CLAUDE_INVOCATION, original)
+
+    def test_explicit_host_controls_commands_even_when_environment_aliases_overlap(self) -> None:
+        environment = {"PLUGIN_DATA": "codex-data", "CLAUDE_PLUGIN_DATA": "claude-data"}
+        for host, invocation, other in (
+            ("codex", WORKLOG.CODEX_INVOCATION, WORKLOG.CLAUDE_INVOCATION),
+            ("claude", WORKLOG.CLAUDE_INVOCATION, WORKLOG.CODEX_INVOCATION),
+        ):
+            with self.subTest(host=host):
+                output = io.StringIO()
+                WORKLOG.run_hook(io.StringIO(json.dumps({"prompt": f"{other} setup", "cwd": str(self.root)})), output, environment, host)
+                self.assertEqual("", output.getvalue())
+                WORKLOG.run_hook(io.StringIO(json.dumps({"prompt": f"{invocation} setup", "cwd": str(self.root)})), output, environment, host)
+                self.assertIn(f"worklog setup ({host})", json.loads(output.getvalue())["reason"])
+
     def test_setup_replaces_legacy_codex_managed_block_only(self) -> None:
         agents = self.root / "AGENTS.md"
         work = self.root / ".hukuhaka" / "work.md"
@@ -419,7 +476,7 @@ class AutomaticArchiveTests(unittest.TestCase):
         ) + "\n")
         return path
 
-    def event(self, event: str, call: str = "call-1", **overrides) -> str:
+    def event(self, event: str, call: str = "call-1", host: str = "codex", **overrides) -> str:
         payload = {
             "hook_event_name": event, "cwd": str(self.root),
             "session_id": "session-1", "tool_use_id": call,
@@ -427,9 +484,35 @@ class AutomaticArchiveTests(unittest.TestCase):
         }
         payload.update(overrides)
         output = io.StringIO()
-        WORKLOG.run_hook(io.StringIO(json.dumps(payload)), output,
-                         {"PLUGIN_DATA": str(self.root / "plugin-data")})
+        environment = {
+            "PLUGIN_DATA": str(self.root / "codex-data"),
+            "CLAUDE_PLUGIN_DATA": str(self.root / "claude-data"),
+        } if host == "claude" else {"PLUGIN_DATA": str(self.root / "plugin-data")}
+        WORKLOG.run_hook(io.StringIO(json.dumps(payload)), output, environment, host)
         return output.getvalue()
+
+    def test_claude_success_and_failure_pairs_use_native_data_and_shared_archive(self) -> None:
+        for post in ("PostToolUse", "PostToolUseFailure"):
+            with self.subTest(event=post):
+                path = self.write_history()
+                self.event("PreToolUse", post, host="claude", tool_name="Bash")
+                self.assertFalse((self.root / "codex-data").exists())
+                path.write_text(path.read_text() + "\nTool edited history before returning.\n")
+                self.assertEqual("", self.event(post, post, host="claude", tool_name="Bash"))
+                self.assertEqual(25, len(WORKLOG.parse_history(path.read_text(), path)[1]))
+                self.assertEqual([], list((self.root / "claude-data/worklog-pending").glob("*.json")))
+                # Start a fresh archive for the next event case.
+                (self.root / ".hukuhaka/changelog/2026-07.md").unlink()
+
+    def test_claude_plan_and_read_only_pairs_do_not_archive(self) -> None:
+        path = self.write_history()
+        before = path.read_bytes()
+        self.event("PreToolUse", host="claude", permission_mode="plan")
+        self.event("PostToolUseFailure", host="claude", permission_mode="plan")
+        self.event("PreToolUse", host="claude", tool_name="Read")
+        self.event("PostToolUse", host="claude", tool_name="Read")
+        self.assertEqual(before, path.read_bytes())
+        self.assertEqual([], list((self.root / ".hukuhaka/changelog").iterdir()))
 
     def test_read_only_and_unpaired_events_preserve_overflow(self) -> None:
         path = self.write_history()
@@ -578,15 +661,25 @@ class WorklogPackageTests(unittest.TestCase):
             (PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
         )
         self.assertEqual("hukuhaka-worklog", codex["name"])
-        self.assertEqual("0.5.0", codex["version"])
+        self.assertEqual("0.5.1", codex["version"])
         self.assertEqual("./skills/", codex["skills"])
-        self.assertNotIn("hooks", codex)
-        self.assertTrue((PLUGIN / "hooks" / "hooks.json").is_file())
-        self.assertFalse((PLUGIN / ".claude-plugin").exists())
-        hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual("./hooks/codex.json", codex["hooks"])
+        self.assertFalse((PLUGIN / "hooks" / "hooks.json").exists())
+        hooks = json.loads((PLUGIN / "hooks" / "codex.json").read_text(encoding="utf-8"))
         handler = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]
-        self.assertEqual('python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" hook', handler["command"])
+        self.assertEqual('python3 "${PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" --host codex hook', handler["command"])
         self.assertNotIn("commandWindows", handler)
+
+    def test_claude_manifest_uses_explicit_native_hooks_and_failed_tool_event(self) -> None:
+        claude = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text())
+        self.assertEqual("hukuhaka-worklog", claude["name"])
+        self.assertEqual("0.5.1", claude["version"])
+        self.assertEqual("./hooks/claude.json", claude["hooks"])
+        hooks = json.loads((PLUGIN / "hooks/claude.json").read_text())["hooks"]
+        self.assertEqual({"PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit"}, set(hooks))
+        for groups in hooks.values():
+            self.assertEqual(1, len(groups))
+            self.assertEqual('python3 "${CLAUDE_PLUGIN_ROOT}/skills/worklog/scripts/worklog.py" --host claude hook', groups[0]["hooks"][0]["command"])
 
     def test_shared_skill_is_model_invokable_and_codex_native(self) -> None:
         skill = (PLUGIN / "skills" / "worklog" / "SKILL.md").read_text(encoding="utf-8")
@@ -598,7 +691,7 @@ class WorklogPackageTests(unittest.TestCase):
         self.assertIn("when explicitly asked to update Worklog", header)
         self.assertNotIn("If either already has user changes", skill)
         self.assertIn("Only the primary agent updates these files", skill)
-        self.assertNotIn("Claude Code", skill)
+        self.assertIn("references/hosts/claude.md", skill)
         self.assertNotIn("/hukuhaka-worklog:worklog", skill)
         self.assertNotIn("references/writing-guide.md", skill)
         self.assertFalse(

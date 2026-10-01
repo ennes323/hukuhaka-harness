@@ -34,6 +34,12 @@ BEGIN = b"<!-- hukuhaka-harness:begin -->"
 END = b"<!-- hukuhaka-harness:end -->"
 GUIDANCE_MANIFEST = ".hukuhaka-guidance-manifest.json"
 EVIDENCE_SCOUT_MANIFEST = ".hukuhaka-evidence-scout-manifest.json"
+RETIRED_READER_RESOURCES = (
+    "agents/project-doc-reader-tool.py",
+    "agents/project-doc-reader-protocol.py",
+    "agents/project-doc-reader/reader-request-v2.schema.json",
+    "agents/project-doc-reader/reader-response-v2.schema.json",
+)
 SCOUT_BEGIN = b"<!-- hukuhaka-evidence-scout:begin -->"
 SCOUT_END = b"<!-- hukuhaka-evidence-scout:end -->"
 REMOTE_MARKETPLACE_SOURCE = "https://github.com/hukuhaka/hukuhaka-harness.git"
@@ -110,227 +116,7 @@ def _agent_bounds(
     return start, end_marker + len(end)
 
 
-class CodexGuidanceDeployment:
-    def __init__(
-        self,
-        source: Path,
-        codex_home: Path,
-        version: str,
-        *,
-        enabled: bool,
-        dry_run: bool = False,
-        force: bool = False,
-    ) -> None:
-        self.source = source
-        self.codex_home = codex_home
-        self.version = version
-        self.enabled = enabled
-        self.dry_run = dry_run
-        self.force = force
-        self.target = codex_home / "AGENTS.md"
-        self.override = codex_home / "AGENTS.override.md"
-        self.manifest_path = codex_home / GUIDANCE_MANIFEST
-        self.state = InstallState(codex_home)
-
-    def _read_target(self) -> bytes:
-        if not self.target.exists() and not self.target.is_symlink():
-            return b""
-        if self.target.is_symlink() or not self.target.is_file():
-            raise StateError(
-                "Codex AGENTS.md must be a regular file",
-                host="codex",
-                stage="guidance",
-                path=str(self.target),
-            )
-        content = self.target.read_bytes()
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise StateError(
-                "Codex AGENTS.md must be UTF-8",
-                host="codex",
-                stage="guidance",
-                path=str(self.target),
-            ) from exc
-        return content
-
-    def _manifest(self) -> Optional[Dict[str, Any]]:
-        data = self.state.receipt("agents-md", self.manifest_path)
-        if data is None:
-            return None
-        required = {
-            "schemaVersion": int,
-            "component": str,
-            "version": str,
-            "target": str,
-            "managedHash": str,
-            "prefix": str,
-            "suffix": str,
-        }
-        if not isinstance(data, dict) or any(
-            not isinstance(data.get(key), value_type) for key, value_type in required.items()
-        ):
-            raise StateError(
-                "invalid Codex guidance manifest",
-                host="codex",
-                stage="guidance",
-                path=str(self.manifest_path),
-            )
-        if (
-            data["schemaVersion"] != 1
-            or data["component"] != "agents-md"
-            or data["target"] != "AGENTS.md"
-            or data["prefix"] not in ("", "\n", "\n\n")
-            or data["suffix"] not in ("", "\n")
-        ):
-            raise StateError(
-                "unsupported Codex guidance manifest",
-                host="codex",
-                stage="guidance",
-                path=str(self.manifest_path),
-            )
-        return data
-
-    def _validate_current(
-        self,
-        content: bytes,
-        bounds: Optional[Tuple[int, int]],
-        manifest: Optional[Dict[str, Any]],
-    ) -> None:
-        if bounds is not None and manifest is None:
-            raise StateError(
-                "managed AGENTS.md block exists without its manifest",
-                host="codex",
-                stage="guidance",
-                path=str(self.target),
-            )
-        if bounds is not None and manifest is not None:
-            start, end = bounds
-            if _hash(content[start:end]) != manifest["managedHash"] and not self.force:
-                raise DriftError(
-                    "managed AGENTS.md block changed; use --force to replace it",
-                    host="codex",
-                    stage="guidance",
-                    path=str(self.target),
-                )
-
-    def _warn_override(self) -> None:
-        if self.override.exists():
-            print(
-                "Warning: {} shadows global AGENTS.md; managed guidance is inactive.".format(
-                    self.override
-                ),
-                file=sys.stderr,
-            )
-
-    def _plan_deploy(self) -> Tuple[bytes, Dict[str, Any]]:
-        """Read state, validate it, and compute the merge. Mutates nothing.
-
-        Callers that write must run this inside installer_state(), after
-        recover_pending(), so the state it reads is the state it writes over.
-        """
-        block = _block(self.source.read_bytes())
-        content = self._read_target()
-        bounds = _bounds(content)
-        manifest = self._manifest()
-        self._validate_current(content, bounds, manifest)
-
-        if bounds is None:
-            prefix = b"" if not content else (b"\n" if content.endswith(b"\n") else b"\n\n")
-            suffix = b"\n"
-            merged = content + prefix + block + suffix
-        else:
-            start, end = bounds
-            prefix = str(manifest["prefix"]).encode()
-            suffix = str(manifest["suffix"]).encode()
-            merged = content[:start] + block + content[end:]
-
-        next_manifest = {
-            "schemaVersion": 1,
-            "component": "agents-md",
-            "version": self.version,
-            "target": "AGENTS.md",
-            "managedHash": _hash(block),
-            "prefix": prefix.decode(),
-            "suffix": suffix.decode(),
-        }
-        return merged, next_manifest
-
-    def deploy(self) -> None:
-        if not self.enabled:
-            # Delegate before taking the lock: uninstall() acquires it itself and
-            # flock is not reentrant across file descriptors.
-            self.uninstall()
-            return
-        with installer_state(self.codex_home, dry_run=self.dry_run) as writable:
-            merged, next_manifest = self._plan_deploy()
-            target_mode = _preserved_mode(self.target)
-            self._warn_override()
-            if not writable:
-                print("  [dry-run] merge agents-md into {}".format(self.target))
-                return
-            with FileTransaction(self.codex_home) as transaction:
-                transaction.write_bytes(self.target, merged, target_mode)
-                self.state.put_receipt(
-                    transaction, "agents-md", next_manifest, kind="template",
-                    installer_version=self.version, legacy_path=self.manifest_path,
-                )
-                transaction.commit()
-        print("  [ok] agents-md -> {}".format(self.target))
-
-    def _plan_uninstall(self) -> Optional[bytes]:
-        """Return the post-removal AGENTS.md bytes, or None when there is nothing
-        to remove. Mutates nothing; same locking requirement as _plan_deploy."""
-        content = self._read_target()
-        bounds = _bounds(content)
-        manifest = self._manifest()
-        if bounds is None and manifest is None:
-            return None
-        self._validate_current(content, bounds, manifest)
-        if bounds is None:
-            # The receipt can outlive the block. Remove only that receipt;
-            # the current document contains no managed bytes to delete.
-            return content
-        assert bounds is not None and manifest is not None
-        start, end = bounds
-        prefix = manifest["prefix"].encode()
-        suffix = manifest["suffix"].encode()
-        if content[max(0, start - len(prefix)):start] != prefix or content[end:end + len(suffix)] != suffix:
-            if not self.force:
-                raise DriftError(
-                    "text surrounding the managed AGENTS.md block changed; use --force to remove it",
-                    host="codex",
-                    stage="guidance",
-                    path=str(self.target),
-                )
-            prefix = b""
-            suffix = b""
-        return content[:start - len(prefix)] + content[end + len(suffix):]
-
-    def uninstall(self) -> None:
-        if self.dry_run:
-            merged = self._plan_uninstall()
-            if merged is not None:
-                print("  [dry-run] remove agents-md from {}".format(self.target))
-            return
-        with installer_state(self.codex_home, dry_run=self.dry_run) as writable:
-            # Recovery must happen before the no-op decision. A killed removal
-            # can leave the manifest absent while the journal still owns the
-            # pre-removal state.
-            merged = self._plan_uninstall()
-            if merged is None:
-                return
-            target_mode = _preserved_mode(self.target)
-            assert writable
-            with FileTransaction(self.codex_home) as transaction:
-                if merged != self._read_target():
-                    if merged:
-                        transaction.write_bytes(self.target, merged, target_mode)
-                    else:
-                        transaction.remove(self.target)
-                self.state.remove_receipt(transaction, "agents-md", self.manifest_path)
-                transaction.commit()
-        print("  [ok] removed agents-md from {}".format(self.target))
+from .guidance import GuidanceDeployment as CodexGuidanceDeployment
 
 
 class CodexCustomAgentDeployment:
@@ -1064,6 +850,29 @@ class CodexInstaller:
         *,
         enabled: bool,
     ) -> CodexCustomAgentDeployment:
+        if name == "project-doc-reader":
+            if enabled:
+                raise StateError(
+                    "project-doc-reader is retired and cannot be selected",
+                    host="codex",
+                    stage="component-selection",
+                )
+            # Keep only the historical ownership allowlist for safe removal.
+            # The retired agent and resource sources are never read or deployed.
+            return CodexCustomAgentDeployment(
+                name,
+                self.repo_root / "agents/project-doc-reader.toml",
+                self.codex_home,
+                self.version,
+                enabled=False,
+                accepted_schemas=(1, 2, 4),
+                resources=tuple(
+                    (self.repo_root / target, target)
+                    for target in RETIRED_READER_RESOURCES
+                ),
+                dry_run=self.dry_run,
+                force=self.force,
+            )
         component = next(
             (
                 item
@@ -1156,7 +965,11 @@ class CodexInstaller:
             if component.get("kind") == "agent"
             and "codex" in component.get("hosts", {})
         ]
-        return names if "evidence-scout" in names else names + ["evidence-scout"]
+        if "evidence-scout" not in names:
+            names.append("evidence-scout")
+        if "project-doc-reader" not in names:
+            names.append("project-doc-reader")
+        return names
 
     def _require_cli(self) -> None:
         if shutil.which("codex") is None and not self.dry_run:

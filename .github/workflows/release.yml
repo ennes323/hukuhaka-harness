@@ -69,6 +69,10 @@ jobs:
         shell: bash
         run: scripts/tests/live-install-codex.sh "${GITHUB_REF_NAME#v}"
 
+      - name: Run the documented explicit Claude installer (fake CLI)
+        shell: bash
+        run: scripts/tests/live-install-claude.sh "${GITHUB_REF_NAME#v}"
+
   publish-release:
     name: Publish GitHub Release
     needs: [release, live-install]

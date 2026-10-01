@@ -31,24 +31,16 @@ The designer loads the recorded references and preserves original direction, not
 selection. Missing required legacy input stops the handoff. Legacy .claude/reports/ paths
 remain read-only, so their realization is returned in the receipt only.
 
-## Codex handoff
+## Native host handoff
 
-Spawn one write-capable worker with explicit `model: gpt-5.6-terra` and
-`reasoning_effort: high`. Use a fresh context (`fork_turns: none`) and pass the
-complete payload above, the resolved `artifact-designer` SKILL.md path, and its
-sibling `references/worker-contract.md` path. Instruct the worker to read the
-worker contract and use that skill before designing or writing.
-Use the generic worker route; hosts may record an untyped spawn as `default`.
-The specialist is defined by its explicit profile and bundled instructions,
-not by that host role label.
+Read the adapter for the current host before delegating:
 
-The plugin owns this specialist through the handoff and bundled instructions;
-it does not register a native agent through the plugin manifest. Do not use
-`astra_worker`, whose role pin would override Terra, or the execution-only
-`result-runner`. Do not inherit the parent's model or reasoning effort.
-If explicit model/effort selection is unavailable, report that limitation
-instead of silently substituting a model. Wait for completion in this task;
-do not install a user-level or project-level agent.
+- Codex: `hosts/codex.md`.
+- Claude Code: `hosts/claude.md`.
+
+Use exactly one host's native route and its declared profile. Profiles are
+separate choices, not a claim of model equivalence. Shared content and design
+ownership, payload, and completion rules apply to both hosts.
 
 ## Completion
 
@@ -62,5 +54,5 @@ coverage, failed checks, and required `not-run` checks. Reuse valid evidence
 while those inputs and the renderer remain unchanged; do not repeat checks
 merely for the handoff. The parent owns final acceptance: `built` records
 construction, and cannot close a required check that failed or was not run.
-Do not claim that unperformed checks passed. If Codex cannot delegate, report that
+Do not claim that unperformed checks passed. If the current host cannot delegate, report that
 capability as unavailable rather than constructing in the planner context.

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const PLUGIN = path.join(ROOT, "marketplace", "hukuhaka-memory-audit");
 const HOOK = path.join(PLUGIN, "scripts", "memory_pressure_hook.py");
-const HOOKS = path.join(PLUGIN, "hooks", "hooks.json");
+const HOOKS = path.join(PLUGIN, "hooks", "codex.json");
 
 function withFixture(callback) {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hukuhaka-memory-audit-"));
@@ -25,7 +25,7 @@ function withFixture(callback) {
 }
 
 function runHook({ codexHome, pluginData, source = "startup" }) {
-  return spawnSync("python3", [HOOK], {
+  return spawnSync("python3", [HOOK, "--host", "codex"], {
     input: `${JSON.stringify({
       hook_event_name: "SessionStart",
       source,
@@ -60,8 +60,26 @@ test("plugin registers one startup-or-resume SessionStart warning hook", () => {
   assert.equal(definition.hooks.SessionStart[0].hooks.length, 1);
   assert.equal(
     definition.hooks.SessionStart[0].hooks[0].command,
-    'python3 "${PLUGIN_ROOT}/scripts/memory_pressure_hook.py"',
+    'python3 "${PLUGIN_ROOT}/scripts/memory_pressure_hook.py" --host codex',
   );
+  const codex = JSON.parse(fs.readFileSync(path.join(PLUGIN, ".codex-plugin/plugin.json"), "utf8"));
+  assert.equal(codex.hooks, "./hooks/codex.json");
+  assert.equal(fs.existsSync(path.join(PLUGIN, "hooks/hooks.json")), false);
+});
+
+test("Claude memory audit uses editable native memory and native size feedback", () => {
+  const claude = JSON.parse(fs.readFileSync(path.join(PLUGIN, ".claude-plugin/plugin.json"), "utf8"));
+  assert.equal(claude.version, "0.2.1");
+  assert.equal(claude.hooks, undefined);
+  assert.equal(fs.existsSync(path.join(PLUGIN, "hooks/claude.json")), false);
+  const adapter = fs.readFileSync(path.join(PLUGIN, "skills/memory-audit/references/hosts/claude.md"), "utf8");
+  assert.match(adapter, /editable MEMORY.md index and topic files/);
+  assert.match(adapter, /After approval of the exact proposal/);
+  assert.match(adapter, /No custom Claude memory-pressure hook is installed/);
+  assert.match(adapter, /200-line and 25 KB/);
+  const codex = fs.readFileSync(path.join(PLUGIN, "skills/memory-audit/references/hosts/codex.md"), "utf8");
+  assert.match(codex, /Never manually edit its\s+summaries, indexes, rollout summaries/);
+  assert.match(codex, /report submission/);
 });
 
 test("below-threshold memory emits nothing and creates no state", () => {
@@ -101,7 +119,7 @@ test("hot summary emits one English warning without changing memory", () => {
     const payload = JSON.parse(first.stdout);
     assert.match(payload.systemMessage, /^Codex memory pressure:/);
     assert.match(payload.systemMessage, /25 KiB or 200 lines/);
-    assert.match(payload.systemMessage, /\$codex-memory-audit/);
+    assert.match(payload.systemMessage, /\$memory-audit/);
     assert.equal(fs.readFileSync(path.join(memoryRoot, "memory_summary.md"), "utf8"), summary);
     assert.deepEqual(state(pluginData), { version: 1, tier: "hot" });
 
@@ -162,7 +180,7 @@ test("returning below threshold resets suppression for later growth", () => {
 
     writeHotSummary(memoryRoot);
     const regrown = runHook({ codexHome, pluginData, source: "resume" });
-    assert.match(JSON.parse(regrown.stdout).systemMessage, /\$codex-memory-audit/);
+    assert.match(JSON.parse(regrown.stdout).systemMessage, /\$memory-audit/);
   });
 });
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -127,16 +128,19 @@ def warning_for(tier: str) -> str:
         return (
             "Codex memory pressure: the always-loaded memory summary has reached "
             "25 KiB or 200 lines. Older, duplicated, or overly specific entries may "
-            "reduce answer quality. Consider running $codex-memory-audit."
+            "reduce answer quality. Consider running $memory-audit."
         )
     return (
         "Codex memory pressure: MEMORY.md has reached 1 MiB or rollout summaries "
         "have reached 300 files. Retrieval may carry more stale or duplicated "
-        "history. Consider running $codex-memory-audit."
+        "history. Consider running $memory-audit."
     )
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", choices=("codex",), default="codex")
+    parser.parse_args()
     try:
         hook_input = json.load(sys.stdin)
         if (

@@ -1,37 +1,62 @@
 #!/usr/bin/env bash
-# Validate that every changed marketplace plugin bumps its native manifest version.
+# Require changed native plugins to increase one version shared by their hosts.
 set -euo pipefail
-
 BASE="${1:?usage: check-plugin-version-bumps.sh <base-ref>}"
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+python3 - "$BASE" <<'PY'
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
 
-changed_plugins=$(git diff --name-only "$BASE"...HEAD -- marketplace/ \
-    | awk -F/ 'NF >= 2 {print $2}' | sort -u)
+base = sys.argv[1]
+changed = subprocess.check_output(["git", "diff", "--name-only", base + "...HEAD", "--", "marketplace/"], text=True)
+names = sorted({path.split("/")[1] for path in changed.splitlines() if len(path.split("/")) >= 3})
+pattern = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)([a-z])?$")
 
-[ -n "$changed_plugins" ] || exit 0
+def key(value):
+    match = pattern.fullmatch(value)
+    if match is None:
+        raise ValueError("invalid version " + repr(value))
+    major, minor, patch, suffix = match.groups()
+    return int(major), int(minor), int(patch), suffix is None, suffix or ""
 
-failed=0
-while IFS= read -r plugin; do
-    [ -n "$plugin" ] || continue
-    codex_manifest="marketplace/$plugin/.codex-plugin/plugin.json"
-    if [ -f "$codex_manifest" ]; then
-        manifest="$codex_manifest"
-    else
-        continue
-    fi
+def versions(name, previous=False):
+    found = []
+    for host in ("codex", "claude"):
+        path = "marketplace/{}/.{}-plugin/plugin.json".format(name, host)
+        if previous:
+            result = subprocess.run(["git", "show", base + ":" + path], text=True, capture_output=True)
+            if result.returncode:
+                continue
+            text = result.stdout
+        else:
+            if not Path(path).is_file():
+                continue
+            text = Path(path).read_text(encoding="utf-8")
+        version = json.loads(text)["version"]
+        key(version)
+        found.append(version)
+    if len(set(found)) > 1:
+        raise ValueError(name + ": host manifest versions differ")
+    return found[0] if found else None
 
-    old_version=$(git show "$BASE:$manifest" 2>/dev/null \
-        | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null \
-        || echo "0.0.0")
-    new_version=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$manifest")
-
-    if [ "$old_version" = "$new_version" ]; then
-        echo "ERROR: $plugin changed without a manifest version bump ($new_version)" >&2
-        failed=1
-    else
-        echo "$plugin: $old_version -> $new_version"
-    fi
-done <<< "$changed_plugins"
-
-exit "$failed"
+failed = False
+for name in names:
+    try:
+        previous, candidate = versions(name, True), versions(name)
+        if candidate is None:
+            if not any(path.is_file() for path in Path("marketplace", name).rglob("*")):
+                print(name + ": removed")
+                continue
+            raise ValueError(name + ": no readable native manifest")
+        if previous is not None and key(candidate) <= key(previous):
+            raise ValueError("{} version must increase: {} -> {}".format(name, previous, candidate))
+        print("{}: {} -> {}".format(name, previous or "new", candidate))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print("ERROR: " + str(exc), file=sys.stderr)
+        failed = True
+sys.exit(1 if failed else 0)
+PY

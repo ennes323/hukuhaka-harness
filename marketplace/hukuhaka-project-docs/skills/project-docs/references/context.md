@@ -28,10 +28,9 @@ can diagnose an index when needed. An invalid index is not usable evidence;
 independent original-document inspection can still proceed. Report a material
 index defect without turning discovery into an unsolicited repair task.
 
-Direct reading is the default. Use [the optional Reader](reader.md) only when
-an installed specialist and a valid index make a bounded assignment useful,
-or when the user explicitly requests it. Its response does not replace the
-original evidence needed to make the task's decisions.
+Direct reading is the supported path. An optional valid index can suggest
+bounded document routes, but it does not create a separate handoff or replace
+the original evidence needed to make the task's decisions.
 
 ## Apply the evidence
 

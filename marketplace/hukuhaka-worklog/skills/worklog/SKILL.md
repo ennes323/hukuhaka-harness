@@ -12,10 +12,13 @@ Write all new or updated records in English. Preserve unrelated
 records; do not translate existing history as a separate task.
 Only the primary agent updates these files.
 
+Read `references/hosts/codex.md` for Codex or `references/hosts/claude.md` for
+Claude Code when using setup, status, archive, or lifecycle automation.
+
 IF either Worklog file is missing:
     Skip recording and continue the underlying task.
     IF recording was explicitly requested:
-        Explain that `$hukuhaka-worklog:worklog setup` is needed first.
+        Explain that the current host's Worklog setup command is needed first.
 
 ## Read existing context
 

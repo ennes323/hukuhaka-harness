@@ -1,6 +1,6 @@
 {
   "name": "hukuhaka-worklog",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Maintain project working memory, retain outcomes and checkpoints, and automatically archive older history.",
   "author": {
     "name": "hukuhaka"
@@ -26,5 +26,6 @@
       "Lifecycle hooks"
     ],
     "defaultPrompt": "Use $hukuhaka-worklog:worklog to record or update this project's work."
-  }
+  },
+  "hooks": "./hooks/codex.json"
 }

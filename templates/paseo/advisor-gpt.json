@@ -1,0 +1,8 @@
+{
+  "name": "advisor-gpt",
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "modeId": "auto-review",
+  "thinkingOptionId": "high",
+  "notes": "Use for an independent second opinion, especially when Main uses Claude."
+}

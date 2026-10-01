@@ -176,10 +176,14 @@ test("handoff instructions require one separate designer and restrict parent wor
     assert.ok(handoff.includes(field));
   assert.match(handoff, /Do not send a planner-authored design or a selected craft list/);
   assert.match(handoff, /Do not build in the parent/);
-  assert.match(handoff, /## Codex handoff/);
-  assert.doesNotMatch(handoff, /Claude Code/);
-  assert.match(handoff, /do not install a user-level(?: or project-level)? agent/);
-  assert.match(handoff, /write-capable worker/);
+  assert.match(handoff, /hosts\/codex.md/);
+  assert.match(handoff, /hosts\/claude.md/);
+  const codex = read("references/hosts/codex.md");
+  assert.match(codex, /do not install a user-level(?: or project-level)? agent/);
+  assert.match(codex, /write-capable worker/);
+  assert.match(codex, /model: gpt-5.6-terra/);
+  assert.match(codex, /reasoning_effort: high/);
+  assert.match(codex, /fork_turns: none/);
   assert.match(handoff, /\.\.\/artifact-designer\/SKILL.md/);
   assert.match(handoff, /same-named\s+installed copy from another version/);
   assert.match(handoff, /cannot delegate, report that\s+capability as unavailable/);
@@ -250,10 +254,28 @@ test("eval cases distinguish plan-only output from designer-owned build output",
   }
 });
 
-test("Codex manifest exposes the report-planner version", () => {
+test("native manifests share report-planner version and Claude owns one designer", () => {
   const codex = JSON.parse(
     fs.readFileSync(path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json"), "utf8")
   );
 
-  assert.equal(codex.version, "0.8.0");
+  assert.equal(codex.version, "0.8.1");
+  assert.equal(codex.agents, undefined);
+  const claude = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, ".claude-plugin/plugin.json"), "utf8"));
+  assert.equal(claude.version, codex.version);
+  assert.deepEqual(claude.agents, ["./agents/artifact-designer.md"]);
+  assert.deepEqual(fs.readdirSync(path.join(PLUGIN_ROOT, "agents")), ["artifact-designer.md"]);
+  const agent = fs.readFileSync(path.join(PLUGIN_ROOT, "agents/artifact-designer.md"), "utf8");
+  assert.match(agent, /^name: artifact-designer$/m);
+  assert.match(agent, /^model: claude-opus-5-5$/m);
+  assert.match(agent, /^effort: medium$/m);
+  assert.match(agent, /^disallowedTools: Agent$/m);
+  assert.match(agent, /- hukuhaka-report-planner:artifact-designer/);
+  assert.match(agent, /exact\s+bundled version/);
+  for (const unsupported of ["permissionMode:", "mcpServers:", "hooks:"]) assert.ok(!agent.includes(unsupported));
+  const adapter = read("references/hosts/claude.md");
+  assert.match(adapter, /native Agent\s+tool/);
+  assert.match(adapter, /not an equivalence claim/);
+  assert.match(adapter, /If this exact native agent or profile is unavailable/);
+  assert.match(adapter, /Do not override its model or effort/);
 });

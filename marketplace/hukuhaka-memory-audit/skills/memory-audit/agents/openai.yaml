@@ -1,0 +1,6 @@
+interface:
+  display_name: "Memory Audit"
+  short_description: "Review memory quality, language, and procedures"
+  default_prompt: "Use $memory-audit to review local memory quality and expression, then propose concrete cleanup."
+policy:
+  allow_implicit_invocation: true

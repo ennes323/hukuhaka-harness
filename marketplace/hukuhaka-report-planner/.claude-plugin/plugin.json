@@ -1,0 +1,23 @@
+{
+  "name": "hukuhaka-report-planner",
+  "version": "0.8.1",
+  "description": "Plan evidence-based visual documents as content specifications, then delegate representation, design, construction, and visual verification to a dedicated artifact designer.",
+  "author": {
+    "name": "hukuhaka"
+  },
+  "repository": "https://github.com/hukuhaka/hukuhaka-harness",
+  "license": "MIT",
+  "keywords": [
+    "document",
+    "report",
+    "planning",
+    "research",
+    "anchors",
+    "spec",
+    "design"
+  ],
+  "skills": "./skills/",
+  "agents": [
+    "./agents/artifact-designer.md"
+  ]
+}

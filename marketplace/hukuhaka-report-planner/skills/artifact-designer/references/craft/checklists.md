@@ -42,5 +42,5 @@ completion state.
 - Mixed granularity (one item hides ten steps, the next is trivial)
 - Steps without observable completion ("ensure the system is healthy" — how?)
 - Warnings after the destructive step they warn about
-- A 30-item flat list — group into phases or split; nobody tracks position past ~10
+- Long flat lists that make readers lose their place — group into phases or split
 - Deep nested conditionals as indented text — that is a diagram refusing its form

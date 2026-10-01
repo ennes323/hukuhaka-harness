@@ -7,7 +7,8 @@ style_risk: a mandatory hero makes operational documents look like marketing pag
 
 ## Cover is identity, not summary
 
-The cover answers "what is this?" at a glance — project name + brief tagline, nothing more. A reader should identify the project in 3 seconds; longer means the cover is doing page 2's work.
+Lead with the project name and a brief tagline so readers can identify the document
+at a glance. Keep supporting context to the metadata and next step described below.
 
 ## Entry-surface rule
 
@@ -41,5 +42,3 @@ Exact scale and composition belong to the designer's responsibility.
 - Tagline (<=8 words ideally)
 - Optional: short metadata strip (version, date, author) at body size — chrome, not content
 - Optional: a mark or identifier when it has real provenance
-
-That's it. If you want more, you want page 2.

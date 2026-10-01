@@ -3,8 +3,67 @@
 All notable changes to hukuhaka-harness are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Plugin versions (`marketplace/<plugin>/.codex-plugin/plugin.json`) are
-independent from the repository version.
+Plugin versions in the native Codex and Claude manifests are independent from
+the repository version.
+
+## [1.4.0] — 2026-10-01
+
+- Add Paseo installation management for seven role profiles, including GPT
+  and Claude advisors. Existing profiles require explicit UUID adoption;
+  updates preserve local edits and removal retains adopted profiles.
+- Add the optional `hukuhaka-paseo` coordination Skill for Codex and Claude.
+  Main retains decisions and acceptance; role rules travel in task briefings.
+- Profile changes require a local Paseo 0.10.2+ daemon, Node.js 22+, and a
+  pinned SDK prepared by npm on first apply. Preview and status work offline.
+  Avoid editing profiles in Paseo during application: its configuration API
+  has no conditional update. Behavioral and efficiency evaluation is pending.
+  Tested with Paseo 0.10.2; later versions are accepted but unverified.
+
+- Restore Claude Code support for all six plugins. Claude Code 2.1.281 or later
+  is required. Run `scripts/install.sh claude install --recommended --yes` for
+  Worklog and global guidance, or select plugins with `--components`.
+- Add Claude install, update, reset, removal, recovery, and user-preference
+  management. Installed plugin sources survive removal of the download or
+  source checkout. Existing managed installations migrate using recorded hashes;
+  edited files remain conflicts. Retain the legacy bridge and plugin data.
+- Generate Codex and Claude global instructions from shared guidance. Claude
+  excludes general subagent and visualization instructions and the three Codex
+  specialist profiles; Report Planner retains its native designer.
+- Separate hooks by host and handle failed Claude tool calls in Worklog.
+  Memory Audit follows Claude's editable Markdown memory contract.
+- Installation and package checks pass on both native CLIs. Claude model
+  routing, instruction compliance, designer output quality, and visual acceptance
+  have not been evaluated for this release.
+
+- Set general subagent profiles to GPT-6 Luna (default max; xhigh/max allowed)
+  and GPT-6.1 Sol (default high; medium/high/xhigh allowed). Select by task demands
+  and required quality, retaining default effort unless a specific reason warrants
+  a change. Add JSON assignment and result forms with linked completion criteria
+  and evidence; explicit role profiles and communication contracts still apply.
+
+- Clarify the two installer recovery paths and Report Planner's cover content,
+  checklist grouping, and timing-axis guidance.
+
+- Clarify component descriptions and installation help; group recovery details
+  for older installations in the installation guide.
+
+- Rename `$codex-memory-audit` to `$memory-audit`. Audit retained memory for
+  English wording and suitable procedural pseudocode as well as factual quality,
+  preserving meaning and source evidence. New audit output uses English.
+  Update saved invocations to the new name.
+
+- Retire the dedicated Project Doc Reader, its JSON handoff, and its active
+  helper resources. Project Docs retains experimental, opt-in direct context and
+  impact workflows plus optional index inventory, validation, and audit.
+- Clean up existing managed Reader installations on the next normal install,
+  reset, or uninstall using recorded ownership and drift checks; preserve
+  unmanaged and user-edited files for review. Historical evaluation records
+  remain unchanged.
+
+- Rework UI/UX Foundation into a concise topic router with source-grounded
+  guidance for design, implementation, review, and verification. Separate
+  consulting an existing design system from constructing one, and preserve
+  contextual choices instead of requiring a fixed task taxonomy or visual style.
 
 ## [1.3.1] — 2026-09-22
 

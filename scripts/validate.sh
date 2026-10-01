@@ -3,9 +3,9 @@
 # Validation Script — run locally or from CI
 #
 # Checks:
-#   1. JSON syntax (catalog, Codex manifests, eval cases)
+#   1. JSON syntax (catalog, native host manifests, eval cases)
 #   2. SKILL.md frontmatter (name, description required)
-#   3. Component catalog and Codex installer lifecycle
+#   3. Component catalog and native host installer lifecycle
 #   4. Private static/runtime harnesses when present
 #   5. Exact public tree construction through release.sh when present
 #
@@ -13,6 +13,7 @@
 #   scripts/validate.sh [--profile private|public]
 #   scripts/validate.sh --release vX.Y.Z
 #   scripts/validate.sh --live-cli
+#   scripts/validate.sh --live-claude-cli
 # HUKUHAKA_VALIDATION_CONTRACT=2: default profiles exclude ambient live CLI tests.
 
 set -euo pipefail
@@ -26,6 +27,8 @@ if [ "$#" -eq 1 ] && [ "$1" = "--live-cli" ]; then
     exec env HUKUHAKA_RUN_LIVE_CLI=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
         scripts.tests.test_install_cli.InstallCliTests.test_installed_codex_cli_temp_home_lifecycle \
         scripts.tests.test_install_cli.InstallCliTests.test_installed_codex_cli_settings_round_trip
+elif [ "$#" -eq 1 ] && [ "$1" = "--live-claude-cli" ]; then
+    exec env PYTHONDONTWRITEBYTECODE=1 python3 "$SCRIPT_DIR/tests/claude_real_e2e.py" --source "$REPO_DIR"
 elif [ "$#" -eq 0 ]; then
     if [ -f "$SCRIPT_DIR/release/main.py" ] || \
        [ -f "$SCRIPT_DIR/prepush/main.py" ] || \
@@ -49,7 +52,7 @@ elif [ "$#" -eq 2 ] && [ "$1" = "--release" ]; then
     fi
     exec python3 -m scripts.release.main validate "$2"
 else
-    echo "Usage: scripts/validate.sh [--profile private|public] [--release vX.Y.Z] [--live-cli]" >&2
+    echo "Usage: scripts/validate.sh [--profile private|public] [--release vX.Y.Z] [--live-cli] [--live-claude-cli]" >&2
     exit 2
 fi
 
@@ -91,9 +94,9 @@ validate_json() {
     fi
 }
 
-# Codex plugin.json — every plugin under marketplace/
+# Native host plugin.json — every plugin under marketplace/
 found_any_plugin=0
-for plugin_json in "$REPO_DIR"/marketplace/*/.codex-plugin/plugin.json; do
+for plugin_json in "$REPO_DIR"/marketplace/*/.codex-plugin/plugin.json "$REPO_DIR"/marketplace/*/.claude-plugin/plugin.json; do
     [ -f "$plugin_json" ] || continue
     validate_json "$plugin_json"
     found_any_plugin=1
@@ -104,12 +107,20 @@ fi
 
 [ -f "$REPO_DIR/.agents/plugins/marketplace.json" ] && \
     validate_json "$REPO_DIR/.agents/plugins/marketplace.json"
+[ -f "$REPO_DIR/.claude-plugin/marketplace.json" ] && \
+    validate_json "$REPO_DIR/.claude-plugin/marketplace.json"
 [ -f "$REPO_DIR/components.json" ] && validate_json "$REPO_DIR/components.json"
 
 # eval v2 cases
 for f in "$REPO_DIR"/eval/cases/*/case.json; do
     [ -f "$f" ] && validate_json "$f"
 done
+
+if python3 "$REPO_DIR/scripts/install/render_guidance.py" --check; then
+    pass "composed host guidance templates"
+else
+    fail "composed host guidance templates differ from their sources"
+fi
 
 # ── 2. SKILL.md Frontmatter ─────────────────────────────────────────
 
@@ -158,7 +169,7 @@ done
 echo ""
 echo "Host support:"
 
-echo "  unittest suites: $VALIDATE_JOBS workers; live CLI is a separate --live-cli check"
+echo "  unittest suites: $VALIDATE_JOBS workers; real CLI checks are separate --live-cli / --live-claude-cli commands"
 SUITE_EXIT=0
 python3 "$SCRIPT_DIR/tests/run_unittest_suites.py" --profile "$PROFILE" \
     --jobs "$VALIDATE_JOBS" --log-dir "$VALIDATE_TMP" \

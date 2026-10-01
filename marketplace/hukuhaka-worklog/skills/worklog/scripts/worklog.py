@@ -33,6 +33,8 @@ COMMANDS = ("setup", "status", "archive")
 RECENT_LIMIT = 25
 CODEX_INVOCATION = f"${PLUGIN_NAME}:{SKILL_NAME}"
 CODEX_LEGACY_INVOCATION = f"${SKILL_NAME}"
+CLAUDE_INVOCATION = f"/{PLUGIN_NAME}:{SKILL_NAME}"
+CLAUDE_COMMANDS = {f"{CLAUDE_INVOCATION} {command}": command for command in COMMANDS}
 CODEX_COMMANDS = {
     f"{invocation} {command}": command
     for invocation in (CODEX_INVOCATION, CODEX_LEGACY_INVOCATION)
@@ -114,14 +116,15 @@ def atomic_write(path: Path, content: str) -> None:
             temporary.unlink()
 
 
-def managed_block() -> str:
+def managed_block(import_agents: bool = False) -> str:
     return "\n".join(
         (
             BEGIN_MARKER,
+            *(("@AGENTS.md", "") if import_agents else ()),
             "## Worklog",
             "",
             "- `.hukuhaka/work.md` contains current Planned, In Progress, and On Hold work.",
-            f"- Use the installed `{CODEX_INVOCATION}` Skill throughout project work to keep progress and useful working context current.",
+            f"- Use the installed Worklog Skill throughout project work to keep progress and useful working context current: `{CODEX_INVOCATION}` in Codex or `{CLAUDE_INVOCATION}` in Claude Code.",
             "- Read current progress before starting or continuing work; consult relevant history when past outcomes or decisions matter.",
             "- Write new or updated records in English, preserving unrelated existing records.",
             "- If the files are missing during automatic use, continue the task without creating them; explicit Worklog requests require setup.",
@@ -150,13 +153,20 @@ def update_managed_text(current: str, block: str, path: Path) -> tuple[str, str]
     return replacement, "updated"
 
 
-def setup(root: Path) -> int:
-    instruction = root / "AGENTS.md"
+def setup(root: Path, host: str = "codex") -> int:
+    # A new CLAUDE.md would suppress inherited AGENTS.md on Claude's default
+    # project-instruction route. Reuse AGENTS.md unless CLAUDE.md already exists.
+    instruction = root / ("CLAUDE.md" if host == "claude" and (root / "CLAUDE.md").exists() else "AGENTS.md")
     refuse_symlink(instruction)
     current_instruction = instruction.read_text(encoding="utf-8") if instruction.exists() else ""
+    import_agents = instruction.name == "CLAUDE.md" and (root / "AGENTS.md").is_file()
+    # Imports already in unmanaged text remain user-owned. The managed import
+    # is reconstructed so repeated setup retains it exactly once.
+    unmanaged = re.sub(re.escape(BEGIN_MARKER) + r".*?" + re.escape(END_MARKER), "", current_instruction, flags=re.DOTALL)
+    import_agents = import_agents and not re.search(r"(?m)^@(?:\./)?AGENTS\.md\s*$", unmanaged)
     next_instruction, instruction_state = update_managed_text(
         current_instruction,
-        managed_block(),
+        managed_block(import_agents),
         instruction,
     )
 
@@ -177,11 +187,11 @@ def setup(root: Path) -> int:
         if not current_instruction:
             created.append(str(instruction.relative_to(root)))
 
-    print("worklog setup (codex)")
+    print(f"worklog setup ({host})")
     print("Created: " + (", ".join(created) if created else "none"))
     print(f"Instructions: {instruction.relative_to(root)} ({instruction_state})")
     print("Existing worklog files were left unchanged.")
-    print("Start a new Codex session to load the instruction update.")
+    print(f"Start a new {'Codex' if host == 'codex' else 'Claude Code'} session to load the instruction update.")
     return 0
 
 
@@ -501,8 +511,10 @@ def hook_response(reason: str) -> str:
     )
 
 
-def hook_command(prompt: str) -> str | None:
+def hook_command(prompt: str, host: str = "codex") -> str | None:
     prompt = prompt.rstrip("\r\n")
+    if host == "claude":
+        return CLAUDE_COMMANDS.get(prompt)
     command = CODEX_COMMANDS.get(prompt)
     if command is not None:
         return command
@@ -527,9 +539,9 @@ def changelog_digest(root: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
-def run_archive_hook(payload: dict, environment: Mapping[str, str]) -> None:
+def run_archive_hook(payload: dict, environment: Mapping[str, str], host: str = "codex") -> None:
     """Pair tool events by identity; never interpret shell code or tool output."""
-    data = environment.get("PLUGIN_DATA")
+    data = environment.get("PLUGIN_DATA" if host == "codex" else "CLAUDE_PLUGIN_DATA")
     fields = [payload.get(key) for key in ("cwd", "session_id", "tool_use_id")]
     if not data or not all(isinstance(value, str) and value for value in fields):
         return
@@ -578,6 +590,7 @@ def run_hook(
     source: TextIO,
     destination: TextIO,
     environment: Mapping[str, str],
+    host: str = "codex",
 ) -> int:
     try:
         payload = json.load(source)
@@ -586,17 +599,20 @@ def run_hook(
     if not isinstance(payload, dict):
         return 0
 
-    codex = "PLUGIN_DATA" in environment
-    if codex and payload.get("hook_event_name") in {"PreToolUse", "PostToolUse"}:
+    active = ("PLUGIN_DATA" if host == "codex" else "CLAUDE_PLUGIN_DATA") in environment
+    events = {"PreToolUse", "PostToolUse"}
+    if host == "claude":
+        events.add("PostToolUseFailure")
+    if active and payload.get("hook_event_name") in events:
         try:
-            run_archive_hook(payload, environment)
+            run_archive_hook(payload, environment, host)
         except (OSError, UnicodeError, ValueError, WorklogError) as exc:
             destination.write(json.dumps({"systemMessage": f"Worklog automatic archive: {exc}"}))
         return 0
     if payload.get("hook_event_name", "UserPromptSubmit") != "UserPromptSubmit":
         return 0
     prompt = payload.get("prompt")
-    command = hook_command(prompt) if codex and isinstance(prompt, str) else None
+    command = hook_command(prompt, host) if active and isinstance(prompt, str) else None
     if command is None:
         return 0
 
@@ -612,7 +628,7 @@ def run_hook(
             raise WorklogError(f"project root is not a directory: {root}")
         with redirect_stdout(output):
             if command == "setup":
-                setup(root)
+                setup(root, host)
             elif command == "status":
                 status(root)
             else:
@@ -627,6 +643,8 @@ def run_hook(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", choices=("codex", "claude"), default="codex",
+                        help="native host adapter (default: codex; never inferred from environment aliases)")
     parser.add_argument(
         "--root",
         type=Path,
@@ -645,11 +663,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "hook":
-        return run_hook(sys.stdin, sys.stdout, os.environ)
+        return run_hook(sys.stdin, sys.stdout, os.environ, args.host)
     root = args.root.resolve()
     try:
         if args.command == "setup":
-            return setup(root)
+            return setup(root, args.host)
         if args.command == "status":
             return status(root)
         if args.command == "archive":

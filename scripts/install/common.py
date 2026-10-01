@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -156,7 +157,14 @@ class InstallerLock:
 
     def __enter__(self) -> "InstallerLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("a+")
+        try:
+            fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            raise StateError("cannot safely open installer lock", operation="acquire-lock", path=str(self.path)) from exc
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise StateError("installer lock must be a regular file", operation="acquire-lock", path=str(self.path))
+        self.handle = os.fdopen(fd, "a+")
         try:
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -194,11 +202,17 @@ class FileTransaction:
     @staticmethod
     def recover_pending(state_root: Path) -> int:
         transactions_root = state_root / ".hukuhaka-transactions"
+        if transactions_root.is_symlink():
+            raise StateError("transaction root must not be a symlink", operation="recover-transaction")
         if not transactions_root.is_dir():
             return 0
         recovered = 0
         for root in sorted(transactions_root.iterdir()):
+            if root.is_symlink() or not root.is_dir():
+                raise StateError("transaction entry must be a directory, not a symlink", operation="recover-transaction")
             journal_path = root / "journal.json"
+            if journal_path.is_symlink():
+                raise StateError("transaction journal must not be a symlink", operation="recover-transaction")
             if not journal_path.is_file():
                 shutil.rmtree(str(root), ignore_errors=True)
                 continue
@@ -223,6 +237,7 @@ class FileTransaction:
                 operation="recover-transaction",
                 message="transaction target escapes installer state root",
             )
+            FileTransaction._check_parents(state_root, target)
             backup = None
             if entry["existed"]:
                 backup = ensure_within(
@@ -231,6 +246,7 @@ class FileTransaction:
                     operation="recover-transaction",
                     message="transaction backup escapes transaction root",
                 )
+                FileTransaction._check_parents(state_root, backup)
                 if not backup.exists() and not backup.is_symlink():
                     raise StateError(
                         "transaction backup is missing",
@@ -243,12 +259,14 @@ class FileTransaction:
             remove_path(target)
             if backup is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if backup.is_dir():
+                if backup.is_dir() and not backup.is_symlink():
                     shutil.copytree(str(backup), str(target), symlinks=True)
                 else:
                     shutil.copy2(str(backup), str(target), follow_symlinks=False)
 
     def __enter__(self) -> "FileTransaction":
+        if self.transactions_root.is_symlink():
+            raise StateError("transaction root must not be a symlink", operation="begin-transaction")
         self.backups.mkdir(parents=True)
         self._write_journal("pending")
         return self
@@ -271,12 +289,24 @@ class FileTransaction:
             operation=operation,
             message="transaction target escapes installer state root",
         )
+        self._check_parents(Path(os.path.abspath(str(self.state_root))), resolved)
         if not allow_root and resolved == Path(os.path.abspath(str(self.state_root))):
             raise StateError(
                 "refusing to remove the installer state root",
                 operation=operation,
                 path=str(resolved),
             )
+
+    @staticmethod
+    def _check_parents(state_root: Path, target: Path) -> None:
+        """A leaf symlink is snapshot data; directory links can escape the root."""
+        if target == state_root:
+            return
+        for parent in target.parents:
+            if parent == state_root:
+                break
+            if parent.is_symlink():
+                raise StateError("transaction parent must not be a symlink", operation="transaction-path")
 
     def snapshot(self, target: Path) -> None:
         self._require_within(target, "snapshot-transaction")

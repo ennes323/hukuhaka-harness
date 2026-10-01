@@ -42,9 +42,29 @@ the existing text remains accurate. Likewise, an unchanged interface does not
 prove there is no impact on operational or verification guidance.
 
 When an authorized update also changes indexed paths or lifecycle metadata,
-use [maintenance](maintenance.md) for the affected index entries. A retained
-Reader may assist a bounded review through [its own contract](reader.md), but
-is not a prerequisite and cannot authorize an edit.
+use [maintenance](maintenance.md) for the affected index entries. The optional
+index remains navigation metadata and cannot authorize an edit.
+
+## Write and revise affected explanations
+
+Apply this guidance when writing or revising documents within an authorized
+update. Match the document's purpose and established register. Lead with the
+behavior, condition, or problem the reader needs to understand; remove generic
+introductions, repeated summaries, and headings that only repeat the next
+sentence. Prefer concrete subjects and verbs over abstract labels or newly
+coined terminology. Add specifics only when supported by source evidence.
+
+Preserve obligations, conditions, exceptions, uncertainty, and the distinction
+between intended and observed behavior. Keep commands, identifiers, quotations,
+and source references exact unless the underlying change requires their update.
+Retain useful tables, lists, and conventional contract or runbook structures;
+formality and regular formatting alone are not defects.
+
+Before finishing, compare the revision with the original and its sources.
+Remove additions that contribute no meaning or grammatical repair. Restore
+original wording when it is equally clear and more concise. Check readability
+and meaning separately: a shorter explanation fails if it loses a required
+caveat or next action. Leave accurate, clear passages alone.
 
 ## Completion
 

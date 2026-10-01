@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .codex import CodexInstaller, resolve_codex_home
+from .claude import ClaudeInstaller, resolve_claude_home
 from .codex_config import (
     CONTEXT_POLICY_SCOPES,
     RECOMMENDED_SETTINGS,
@@ -35,7 +36,7 @@ from .settings import Settings, cli_literal, read_profile, wizard
 from .settings_catalog import RECOMMENDED, KEYS
 
 
-HOST_LABELS = {"codex": "Codex"}
+HOST_LABELS = {"codex": "Codex", "claude": "Claude Code", "paseo": "Paseo"}
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class Installer:
         }
         self._target_version_cache = {}  # type: Dict[Tuple[str, str], str]
         self.version = args.resolved_version or self._source_version()
+        self._paseo_adapter = None
 
     def _source_version(self) -> str:
         path = self.repo_root / "VERSION"
@@ -117,6 +119,8 @@ class Installer:
             version = self._target_plugin_version(host, str(component["name"]))
             if version:
                 item["version"] = version
+            if host == "paseo":
+                item["profile"] = load_json(self.repo_root / component["path"], {})
             components.append(item)
         return components
 
@@ -207,8 +211,49 @@ class Installer:
             force=bool(getattr(self.args, "force", False)),
         )
 
+    def _adapter(self, host: str):
+        if host == "codex":
+            return self._codex()
+        if host == "claude":
+            return ClaudeInstaller(self.repo_root, self.catalog, self.version,
+                                   local_source=bool(self.args.local_source),
+                                   dry_run=bool(getattr(self.args, "dry_run", False)),
+                                   force=bool(getattr(self.args, "force", False)))
+        if host == "paseo":
+            if self._paseo_adapter is None:
+                from .paseo import PaseoInstaller
+                self._paseo_adapter = PaseoInstaller(self.repo_root, self.catalog, self.version,
+                                  local_source=bool(self.args.local_source),
+                                  dry_run=bool(getattr(self.args, "dry_run", False)),
+                                  force=bool(getattr(self.args, "force", False)),
+                                  adopt=self._paseo_adoptions(),
+                                  rename_adopted=getattr(self.args, "rename_adopted", []))
+            return self._paseo_adapter
+        raise InstallerError("unsupported host: " + host)
+
+    @staticmethod
+    def _home(host: str) -> Path:
+        if host == "paseo":
+            from .paseo import resolve_paseo_home
+            return resolve_paseo_home()
+        return resolve_codex_home() if host == "codex" else resolve_claude_home()
+
+    def _paseo_adoptions(self) -> Dict[str, str]:
+        mappings = {}
+        for item in getattr(self.args, "adopt", []):
+            role, separator, identifier = item.partition("=")
+            if not separator or not role.strip() or not identifier.strip():
+                raise InstallerError("--adopt requires ROLE=UUID", host="paseo", stage="adoption")
+            role, identifier = role.strip(), identifier.strip()
+            if role in mappings or identifier in mappings.values():
+                raise InstallerError("adoption roles and UUIDs must each be unique", host="paseo", stage="adoption")
+            mappings[role] = identifier
+        if set(getattr(self.args, "rename_adopted", [])) - set(mappings):
+            raise InstallerError("--rename-adopted requires an explicit --adopt mapping for that role", host="paseo", stage="adoption")
+        return mappings
+
     def _current_state(self, host: str) -> HostComponentState:
-        components, versions = self._codex().current_component_state()
+        components, versions = self._adapter(host).current_component_state()
 
         normalized = {}  # type: Dict[str, str]
         for name, version in sorted(
@@ -226,7 +271,7 @@ class Installer:
         return HostComponentState(normalized_components, normalized)
 
     def _current(self, host: str) -> Set[str]:
-        return self._codex().current_components()
+        return self._adapter(host).current_components()
 
     def _version_summary(
         self,
@@ -257,9 +302,9 @@ class Installer:
         print("")
         print("Detecting supported hosts...")
         print("")
-        for host in ("codex",):
-            prefix = "✓" if detected[host] else "-"
-            suffix = "detected" if detected[host] else "not found"
+        for host in HOST_LABELS:
+            prefix = "✓" if detected.get(host, False) else "-"
+            suffix = "detected" if detected.get(host, False) else "not found"
             print("{} {} {}".format(prefix, HOST_LABELS[host], suffix))
         print("")
 
@@ -284,6 +329,11 @@ class Installer:
                 if self.args.local_source and desired:
                     print("  Marketplace source: use local checkout {}".format(self.repo_root))
                     print("  Existing official remote or local registration will be switched, with rollback attempted on failure.")
+            if plan.host == "claude":
+                print("  Installer records: {}".format(self._home(plan.host) / "hk-config.toml"))
+                self._adapter("claude").preview()
+            if plan.host == "paseo":
+                self._adapter("paseo").preview(plan.components, reset=plan.reset)
             print("  Components")
             print(
                 "    Install/update: {}".format(
@@ -305,7 +355,7 @@ class Installer:
                         detail=detail,
                     ))
             print(
-                "    Remove:         {}".format(
+                ("    Remove/release: {}" if plan.host == "paseo" else "    Remove:         {}").format(
                     csv_value(sorted(before - desired)) or "none"
                 )
             )
@@ -387,7 +437,7 @@ class Installer:
     def _apply_host(
         self, plan: HostInstallPlan, before: Optional[Set[str]] = None
     ) -> HostResult:
-        installer = self._codex()
+        installer = self._adapter(plan.host)
         if not plan.reset and not plan.components and not before and not installer.state.read()["components"]:
             return HostResult(plan.host, "noop")
         try:
@@ -396,10 +446,10 @@ class Installer:
                 reset=plan.reset,
                 include_template=plan.include_template,
             )
-            return HostResult("codex", "success")
+            return HostResult(plan.host, "success")
         except InstallerError as exc:
             status = "partial" if installer.completed else "failed"
-            return HostResult("codex", status, exc.render())
+            return HostResult(plan.host, status, exc.render())
 
     @staticmethod
     def _combine_codex_result(
@@ -475,11 +525,11 @@ class Installer:
                 file=sys.stderr,
             )
             return 2
-        detected = {"codex": shutil.which("codex") is not None}
+        detected = {host: shutil.which(host) is not None for host in HOST_LABELS}
         self._print_detection(detected)
         if not any(detected.values()):
             print(
-                "No supported host was detected. Install Codex first.",
+                "No supported host was detected. Install a supported host CLI first.",
                 file=sys.stderr,
             )
             return 1
@@ -487,25 +537,49 @@ class Installer:
         sections = []
         current = {}  # type: Dict[str, Set[str]]
         installed_versions = {}  # type: Dict[str, Mapping[str, str]]
-        for host in ("codex",):
-            if not detected[host]:
+        for host in HOST_LABELS:
+            if not detected.get(host, False):
                 continue
-            state = self._current_state(host)
+            try:
+                version = self._adapter(host).require_cli() if host in {"claude", "paseo"} else self._host_version(host)
+                state = self._current_state(host)
+                profile_status = self._adapter(host).status()["roles"] if host == "paseo" else []
+            except InstallerError as exc:
+                print("{} unavailable for management: {}".format(HOST_LABELS[host], exc.render()), file=sys.stderr)
+                continue
             current[host] = state.components
             installed_versions[host] = state.plugin_versions
             section = {
                 "host": host,
                 "label": HOST_LABELS[host],
-                "version": self._host_version(host),
+                "version": version,
                 "components": self._components(host),
                 "selected": state.components or set(self._recommended(host)),
+                "enabled": False,
             }
+            if host == "paseo":
+                section["profile_status"] = profile_status
             sections.append(section)
+
+        if not sections:
+            print("No detected host could be inspected. Resolve the reported errors before applying changes.", file=sys.stderr)
+            return 1
 
         plans = prompt_install_plan(sys.stdin, sys.stdout, sections=sections)
         if not plans:
             print("Exit. No changes were made.")
             return 0
+
+        if len(plans) == 1 and plans[0].action != "install":
+            selected = plans[0]
+            if selected.action == "adopt":
+                return self._paseo_adoption_wizard(selected.components)
+            action_args = {"state-show": ["state", "show"], "state-recover": ["state", "recover"],
+                           "settings": ["settings"], "uninstall": ["uninstall"]}[selected.action]
+            self.args = build_parser().parse_args(["--repo-root", str(self.repo_root),
+                                                  "--resolved-version", self.version,
+                                                  selected.host, *action_args])
+            return self.automation()
 
         config_editor = None  # type: Optional[CodexConfigEditor]
         config_plan = None  # type: Optional[ConfigPlan]
@@ -809,7 +883,20 @@ class Installer:
         return 0
 
     def _installer_state(self) -> int:
-        state = InstallState(resolve_codex_home())
+        if self.args.host == "paseo":
+            if self.args.state_action == "show":
+                return self._paseo_status()
+            print("Recover Paseo installer receipt transactions or restore the receipt backup.")
+            print("Saved profiles and config.json are not restored or changed by this action.")
+            print("Receipt record: {}".format(self._home("paseo") / "hk-config.toml"))
+            if not self._confirm():
+                print("Exit. No changes were made.")
+                return 0
+            self._adapter("paseo").recover()
+            print("Dry run complete. No files were modified." if self.args.dry_run else
+                  "Paseo receipt recovery complete. Rerun status before applying.")
+            return 0
+        state = InstallState(self._home(self.args.host))
         if self.args.state_action == "show":
             data = state.read()
             if self.args.json:
@@ -867,18 +954,20 @@ class Installer:
             state.finish_operation(identity, "success", ["restored installer record backup"])
         if archived:
             print("Previous record preserved at {}".format(state.home / archived))
-        print("Installer records restored. Component files and Codex settings were not changed.")
+        print("Installer records restored. Component files and host settings were not changed.")
         return 0
 
     def automation(self) -> int:
         host = self.args.host
+        if host == "paseo" and self.args.action == "status":
+            return self._paseo_status()
         if self.args.action == "state":
             return self._installer_state()
         if (self.args.action == "agents"
                 and self.args.agent_action == "model"
                 and self.args.model_action == "inspect"):
             return self._agent_policy()
-        if shutil.which(host) is None:
+        if shutil.which(host) is None and not (host == "paseo" and getattr(self.args, "dry_run", False)):
             print(
                 "installer [host={} stage=detect]: {} CLI was not found".format(
                     host, host
@@ -888,7 +977,7 @@ class Installer:
             return 1
 
         if self.args.action == "settings":
-            return self._settings()
+            return self._claude_settings() if host == "claude" else self._settings()
 
         if self.args.action == "context":
             return self._context_policy()
@@ -905,11 +994,15 @@ class Installer:
         if self.args.action == "uninstall":
             current = self._current(host)
             print("{} uninstall: {}".format(HOST_LABELS[host], csv_value(sorted(current)) or "none"))
-            print("Installer records retained at {}".format(resolve_codex_home() / "hk-config.toml"))
+            if host == "paseo":
+                self._adapter(host).preview([], reset=False)
+                print("Adopted profiles are retained and released from management.")
+            else:
+                print("Installer records retained at {}".format(self._home(host) / "hk-config.toml"))
             if not self._confirm():
                 print("Exit. No changes were made.")
                 return 0
-            adapter = self._codex()
+            adapter = self._adapter(host)
             if not current and not adapter.state.read()["components"]:
                 return self._print_results(
                     [HostResult(host, "noop")], dry_run=self.args.dry_run
@@ -942,10 +1035,90 @@ class Installer:
         result = self._apply_host(plan, current[host])
         return self._print_results([result], dry_run=self.args.dry_run)
 
+    def _paseo_status(self) -> int:
+        status = self._adapter("paseo").status()
+        if getattr(self.args, "json", False):
+            print(json.dumps(status, indent=2, ensure_ascii=False))
+        else:
+            print("Paseo saved profiles (local snapshot; runtime availability is unverified)")
+            print("Profile home: {}".format(status["home"]))
+            for role in status["roles"]:
+                print("  {}: {} (UUID {})".format(role["role"], role["status"], role.get("id") or "none"))
+                if role.get("profile"):
+                    print("    " + json.dumps(role["profile"], ensure_ascii=False, sort_keys=True))
+                if role.get("candidate_ids"):
+                    print("    Unmanaged candidate UUIDs: " + csv_value(role["candidate_ids"]))
+            print("All saved profiles:")
+            for profile in status["profiles"]:
+                print("  " + json.dumps(profile, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    def _paseo_adoption_wizard(self, selected: Sequence[str]) -> int:
+        self._paseo_status()
+        print("Names do not establish ownership. Enter explicit ROLE=UUID mappings to review adoption.")
+        print("Adopted profiles retain all fields and are retained on uninstall.")
+        raw = input("Mappings, comma-separated (blank cancels): ").strip()
+        if not raw:
+            return 0
+        self.args.adopt = csv_items(raw)
+        self.args.rename_adopted = csv_items(input("Roles to rename and refresh notes, comma-separated (blank preserves all fields): "))
+        mappings = self._paseo_adoptions()
+        self._paseo_adapter = None
+        desired = list(dict.fromkeys([*selected, *mappings]))
+        self._validate_components("paseo", desired)
+        self._adapter("paseo").preview(desired)
+        if input("Confirm adoption of these exact UUIDs? [y/N] ").strip().lower() != "y":
+            print("Exit. No changes were made.")
+            return 0
+        self.args.host = "paseo"
+        self.args.action = "install"
+        self.args.components = csv_value(desired)
+        self.args.recommended = False
+        self.args.yes = False
+        self.args.dry_run = False
+        self.args.force = False
+        return self.automation()
+
     def run(self) -> int:
         if self.args.host is None:
             return self.interactive()
         return self.automation()
+
+    def _claude_settings(self) -> int:
+        from .claude_settings import ClaudeSettings, cli_value, read_profile, wizard as claude_wizard
+        args = self.args
+        manager = ClaudeSettings(resolve_claude_home(), dry_run=getattr(args, "dry_run", False))
+        action = args.settings_action
+        if action == "show":
+            manager.show(as_json=args.json)
+            return 0
+        if action == "history":
+            for identity, record in manager.records():
+                print("{}: {}".format(identity, record.get("label", "settings")))
+            return 0
+        if action == "export":
+            manager.export(Path(args.file))
+            return 0
+        if action == "set":
+            plan = manager.plan({args.key: cli_value(args.key, args.value)})
+        elif action == "unset":
+            plan = manager.plan(remove=(args.key,))
+        elif action in {"apply", "diff"}:
+            plan = manager.plan(read_profile(Path(args.file)))
+        elif action == "restore":
+            plan = manager.restore_plan(args.receipt)
+        else:
+            if not self._tty_available():
+                raise InstallerError("claude settings requires a terminal or an explicit action", host="claude", stage="settings")
+            plan = claude_wizard(manager)
+            if plan is None:
+                return 0
+        print(plan.diff(), end="")
+        print("Saved user preferences only; running-session overrides and model availability are not verified.")
+        if action == "diff" or not self._confirm():
+            return 0
+        manager.apply(plan, label=action if action in {"set", "unset", "restore"} else "settings")
+        return 0
 
     def _settings(self) -> int:
         args = self.args
@@ -994,7 +1167,7 @@ class Installer:
 def _add_mutation_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--yes", action="store_true", help="skip confirmation")
     parser.add_argument("--dry-run", action="store_true", help="preview without applying changes")
-    parser.add_argument("--force", action="store_true", help="authorize replacement of conflicting managed files")
+    parser.add_argument("--force", action="store_true", help="authorize replacement of conflicting managed components")
 
 
 def _add_bootstrap_passthrough(parser: argparse.ArgumentParser) -> None:
@@ -1014,7 +1187,7 @@ def _add_selection(parser: argparse.ArgumentParser) -> None:
     selection.add_argument(
         "--recommended",
         action="store_true",
-        help="use supported components whose catalog default is true",
+        help="select the recommended components",
     )
     selection.add_argument(
         "--components",
@@ -1022,10 +1195,35 @@ def _add_selection(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_claude_settings_parser(actions) -> None:
+    settings = actions.add_parser("settings", help="explicit Claude user preferences, independent of installation")
+    settings.add_argument("--yes", action="store_true")
+    settings.add_argument("--dry-run", action="store_true")
+    _add_bootstrap_passthrough(settings)
+    commands = settings.add_subparsers(dest="settings_action")
+    for name in ("show", "history", "export", "set", "unset", "apply", "diff", "restore"):
+        command = commands.add_parser(name)
+        _add_bootstrap_passthrough(command)
+        command.add_argument("--yes", action="store_true", default=argparse.SUPPRESS)
+        command.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
+        if name == "show":
+            command.add_argument("--json", action="store_true")
+        elif name in {"set", "unset"}:
+            command.add_argument("key")
+            if name == "set":
+                command.add_argument("value")
+        elif name in {"apply", "diff"}:
+            command.add_argument("--file", required=True, help="partial JSON preference profile")
+        elif name == "export":
+            command.add_argument("file")
+        elif name == "restore":
+            command.add_argument("receipt")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scripts/install.sh",
-        description="Install and manage hukuhaka-harness for Codex.",
+        description="Install and manage hukuhaka-harness for Codex, Claude Code, and Paseo profiles.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Run without arguments in a terminal for interactive installation.\n"
@@ -1044,8 +1242,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", metavar="X.Y.Z", help="select a remote release or require this local source version")
     parser.add_argument("--source-dir", help="use an existing source checkout")
     hosts = parser.add_subparsers(dest="host")
-    for host in ("codex",):
-        host_parser = hosts.add_parser(host, help="manage Codex components and settings")
+    for host in HOST_LABELS:
+        host_parser = hosts.add_parser(host, help="manage Paseo saved profiles" if host == "paseo" else "manage {} components and settings".format(HOST_LABELS[host]))
         actions = host_parser.add_subparsers(dest="action", required=True)
         for action in ("install", "reset"):
             action_parser = actions.add_parser(
@@ -1054,23 +1252,33 @@ def build_parser() -> argparse.ArgumentParser:
                 description="Select the complete desired managed set. Independent settings are preserved.",
             )
             _add_selection(action_parser)
-            if action == "reset":
+            if action == "reset" and host != "paseo":
                 action_parser.add_argument("--include-template", action="store_true")
+            if host == "paseo":
+                action_parser.add_argument("--adopt", action="append", default=[], metavar="ROLE=UUID", help="explicitly adopt an existing profile; repeat per role")
+                action_parser.add_argument("--rename-adopted", action="append", default=[], metavar="ROLE", help="opt in to changing only the adopted profile name and notes")
             _add_mutation_flags(action_parser)
             _add_bootstrap_passthrough(action_parser)
         uninstall = actions.add_parser("uninstall", help="remove managed components; preserve independent settings")
         _add_mutation_flags(uninstall)
         _add_bootstrap_passthrough(uninstall)
-        if host == "codex":
+        if host == "paseo":
+            status = actions.add_parser("status", help="inspect saved profiles and management without a running daemon")
+            status.add_argument("--json", action="store_true")
+            _add_bootstrap_passthrough(status)
+        if host in HOST_LABELS:
             state = actions.add_parser("state", help="inspect or recover Hukuhaka installer records")
             state_actions = state.add_subparsers(dest="state_action", required=True)
-            state_show = state_actions.add_parser("show", help="show recorded components and recent operation history")
+            state_show = state_actions.add_parser("show", help="show saved profile snapshot and ownership" if host == "paseo" else "show recorded components and recent operation history")
             state_show.add_argument("--json", action="store_true")
             _add_bootstrap_passthrough(state_show)
-            state_recover = state_actions.add_parser("recover", help="restore the last valid installer record backup")
+            state_recover = state_actions.add_parser("recover", help="recover receipt transactions or backup only" if host == "paseo" else "recover pending file transactions or restore the installer record backup")
             state_recover.add_argument("--yes", action="store_true")
             state_recover.add_argument("--dry-run", action="store_true")
             _add_bootstrap_passthrough(state_recover)
+        if host == "claude":
+            _add_claude_settings_parser(actions)
+        if host == "codex":
             settings = actions.add_parser("settings", help="inspect, edit, compare, restore and organize settings")
             settings.add_argument("--yes", action="store_true")
             settings.add_argument("--dry-run", action="store_true")

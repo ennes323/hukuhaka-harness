@@ -53,11 +53,11 @@ class ProjectDocsStatusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = {"components": [
             {"name": name, "default": False, "lifecycle": "supported"}
-            for name in ("hukuhaka-project-docs", "project-doc-reader")
+            for name in ("hukuhaka-project-docs",)
         ]}
         self.readme = "\n".join(
-            f"| **{name}** | — | Experimental / opt-in | Codex only | Description |"
-            for name in ("hukuhaka-project-docs", "Project Doc Reader")
+            f"| **{name}** | — | Experimental / opt-in | Codex and Claude Code | Description |"
+            for name in ("hukuhaka-project-docs",)
         )
 
     def test_public_candidate_does_not_require_private_docs(self) -> None:
@@ -65,7 +65,7 @@ class ProjectDocsStatusTests(unittest.TestCase):
             self.assertEqual([], document_contracts.validate_project_docs_status(
                 Path(temp_name), self.catalog, self.readme))
 
-    def test_both_components_must_remain_opt_in_with_native_support(self) -> None:
+    def test_plugin_must_remain_opt_in_with_native_support(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             for component in self.catalog["components"]:
                 for field, value in (("default", True), ("lifecycle", "deprecated")):
@@ -82,7 +82,13 @@ class ProjectDocsStatusTests(unittest.TestCase):
             errors = document_contracts.validate_project_docs_status(
                 Path(temp_name), self.catalog,
                 self.readme.replace("Experimental / opt-in", "Supported"))
-            self.assertEqual(2, len(errors))
+            self.assertEqual(1, len(errors))
+
+    def test_readme_must_preserve_both_host_supports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            errors = document_contracts.validate_project_docs_status(
+                Path(temp_name), self.catalog, self.readme.replace(" and Claude Code", ""))
+            self.assertTrue(errors)
 
     def test_stale_private_pilot_verdict_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
@@ -123,6 +129,7 @@ class ProjectDocsStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_name:
             required = document_contracts.required_current_docs(Path(temp_name))
             self.assertNotIn("AGENTS.md", required)
+            self.assertNotIn("CLAUDE.md", required)
 
     def test_private_checkout_requires_root_agents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
@@ -131,28 +138,38 @@ class ProjectDocsStatusTests(unittest.TestCase):
             release_tool.parent.mkdir(parents=True)
             release_tool.write_text("# private release tool\n", encoding="utf-8")
             self.assertIn("AGENTS.md", document_contracts.required_current_docs(root))
+            self.assertIn("CLAUDE.md", document_contracts.required_current_docs(root))
 
 
-class CodexOnlyDocumentTests(unittest.TestCase):
-    def test_retired_root_and_private_paths_are_rejected(self) -> None:
+class NativeHostDocumentTests(unittest.TestCase):
+    def test_private_claude_router_requires_shared_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            release_tool = root / "scripts/release/main.py"
+            release_tool.parent.mkdir(parents=True)
+            release_tool.write_text("# private", encoding="utf-8")
+            router = root / "CLAUDE.md"
+            router.write_text("@AGENTS.md\n", encoding="utf-8")
+            self.assertEqual([], document_contracts.validate_host_docs(root))
+            router.write_text("# Independent rules\n", encoding="utf-8")
+            self.assertTrue(document_contracts.validate_host_docs(root))
+
+    def test_public_root_and_retired_private_paths_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
             (root / "CLAUDE.md").write_text("retired host", encoding="utf-8")
             (root / "docs" / "hukuhaka-codex").mkdir(parents=True)
             self.assertEqual(
                 2,
-                len(document_contracts.validate_codex_only_docs(root)),
+                len(document_contracts.validate_host_docs(root)),
             )
 
-    def test_active_docs_reject_retired_host_reference(self) -> None:
+    def test_active_docs_accept_both_native_hosts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
             path = root / "README.md"
             path.write_text("Codex and Claude Code", encoding="utf-8")
-            self.assertTrue(
-                any("retired host reference" in error
-                    for error in document_contracts.validate_codex_only_docs(root))
-            )
+            self.assertEqual([], document_contracts.validate_host_docs(root))
 
 
 if __name__ == "__main__":

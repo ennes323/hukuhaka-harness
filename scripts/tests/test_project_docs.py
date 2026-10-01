@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,147 +63,23 @@ class ProjectDocsTests(unittest.TestCase):
         self.assertEqual(first.stdout, second.stdout)
         self.assertEqual("valid", json.loads(first.stdout)["status"])
 
-    def test_reader_catalog_returns_validated_metadata_without_content(self) -> None:
-        self.write_manifest(self.manifest())
-        first = self.run_cli("reader-catalog", "--root", str(self.root))
-        second = self.run_cli("reader-catalog", "--root", str(self.root))
-        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
-        self.assertEqual(first.stdout, second.stdout)
-        payload = json.loads(first.stdout)
-        self.assertEqual("ready", payload["status"])
-        self.assertEqual(1, len(payload["documents"]))
-        document = payload["documents"][0]
-        self.assertEqual("architecture", document["id"])
-        self.assertEqual(0, document["index"])
-        self.assertEqual(
-            (self.root / "docs" / "architecture.md").stat().st_size,
-            document["bytes"],
-        )
-        self.assertNotIn("numberedContent", document)
-
-    def test_reader_read_batches_selected_documents_in_manifest_order(self) -> None:
-        decisions = self.root / "docs" / "decisions.md"
-        decisions.write_text("# Decisions\n\nKeep this indexed evidence.\n", encoding="utf-8")
-        value = self.manifest()
-        second = dict(value["documents"][0])
-        second.update(
-            {
-                "id": "decisions",
-                "path": "docs/decisions.md",
-                "role": "decision",
-                "authority": "evidence",
-                "summary": "Decision evidence.",
-                "appliesTo": ["docs/**"],
-                "readWhen": ["decision rationale"],
-            }
-        )
-        value["documents"].append(second)
-        self.write_manifest(value)
-        result = self.run_cli(
-            "reader-read",
-            "--root",
-            str(self.root),
-            "--ids",
-            "decisions,architecture",
-            "--max-documents",
-            "2",
-            "--max-bytes",
-            str(PROJECT_DOCS.MAX_READER_BYTES),
-        )
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual("complete", payload["status"])
-        self.assertEqual(
-            ["architecture", "decisions"],
-            [item["id"] for item in payload["documents"]],
-        )
-        self.assertTrue(payload["documents"][0]["numberedContent"].startswith("1\t# Architecture"))
-        self.assertIn("3\tKeep this indexed evidence.", payload["documents"][1]["numberedContent"])
-        self.assertEqual(
-            sum(item["bytes"] for item in payload["documents"]),
-            payload["documentBytes"],
-        )
-
-    def test_reader_read_rejects_unknown_duplicate_and_over_budget_selection(self) -> None:
-        self.write_manifest(self.manifest())
-        cases = (
-            ("missing", "selection.unknown", "4", str(PROJECT_DOCS.MAX_READER_BYTES), "unavailable"),
-            ("architecture,architecture", "selection.duplicate", "4", str(PROJECT_DOCS.MAX_READER_BYTES), "unavailable"),
-            ("architecture", "selection.byte-limit", "4", "1", "partial"),
-        )
-        for identifiers, expected, max_documents, max_bytes, status in cases:
-            with self.subTest(identifiers=identifiers, expected=expected):
-                result = self.run_cli(
-                    "reader-read",
-                    "--root",
-                    str(self.root),
-                    "--ids",
-                    identifiers,
-                    "--max-documents",
-                    max_documents,
-                    "--max-bytes",
-                    max_bytes,
-                )
-                self.assertEqual(1, result.returncode)
-                payload = json.loads(result.stdout)
-                self.assertEqual(status, payload["status"])
-                self.assertEqual([], payload["documents"])
-                self.assertIn(expected, {item["code"] for item in payload["errors"]})
-
-    def test_reader_catalog_fails_closed_on_parsed_manifest_validation_error(self) -> None:
-        self.write_manifest(self.manifest(path="docs/missing.md"))
-        result = self.run_cli("reader-catalog", "--root", str(self.root))
-        self.assertEqual(1, result.returncode)
-        payload = json.loads(result.stdout)
-        self.assertEqual("unavailable", payload["status"])
-        self.assertEqual([], payload["documents"])
-        self.assertIn("path.missing", {item["code"] for item in payload["errors"]})
-
-    def test_reader_read_maps_post_validation_read_failure_to_partial(self) -> None:
-        self.write_manifest(self.manifest())
-        resolved_root = self.root.resolve()
-        validation, data = PROJECT_DOCS.validate(resolved_root, "project-docs.json")
-        (self.root / "docs" / "architecture.md").unlink()
-        with mock.patch.object(
-            PROJECT_DOCS,
-            "validate",
-            return_value=(validation, data),
-        ):
-            payload = PROJECT_DOCS.reader_read(
-                resolved_root,
-                "project-docs.json",
-                ["architecture"],
-                4,
-                PROJECT_DOCS.MAX_READER_BYTES,
-            )
-        self.assertEqual("partial", payload["status"])
-        self.assertEqual([], payload["documents"])
-        self.assertEqual(0, payload["documentBytes"])
-        self.assertIn("selection.read-error", {item["code"] for item in payload["errors"]})
-
     def test_contract_schemas_are_valid_json(self) -> None:
         references = SCRIPT.parent.parent / "references"
         schemas = sorted(references.glob("*.schema.json"))
-        self.assertEqual({"project-docs.schema.json", "reader-request.schema.json",
-                          "reader-response.schema.json", "reader-request-v2.schema.json",
-                          "reader-response-v2.schema.json"}, {schema.name for schema in schemas})
+        self.assertEqual({"project-docs.schema.json"}, {schema.name for schema in schemas})
         for schema in schemas:
             with self.subTest(schema=schema.name):
                 value = json.loads(schema.read_text(encoding="utf-8"))
                 self.assertEqual("object", value["type"])
                 self.assertFalse(value["additionalProperties"])
 
-    def test_wire_cli_rejects_raw_duplicate_keys_and_invalid_pair_envelopes(self) -> None:
-        for command, raw in (("reader-validate-request", '{"schemaVersion":2,"schemaVersion":2}'),
-                             ("reader-validate-response", '{"request":{}}')):
+    def test_retired_reader_commands_are_rejected(self) -> None:
+        for command in ("reader-catalog", "reader-read", "reader-session",
+                        "reader-validate-request", "reader-validate-response"):
             with self.subTest(command=command):
-                result = subprocess.run(("python3", str(SCRIPT), command), input=raw,
-                                        text=True, capture_output=True, check=False)
-                self.assertEqual(1, result.returncode, result.stderr)
-                value = json.loads(result.stdout)
-                self.assertEqual(2, value["schemaVersion"])
-                self.assertEqual("invalid", value["status"])
-                self.assertTrue(value["errors"])
+                result = self.run_cli(command)
+                self.assertEqual(2, result.returncode)
+                self.assertIn("invalid choice", result.stderr)
 
     def test_missing_empty_duplicate_and_additional_fields_fail(self) -> None:
         missing = self.run_cli("validate", "--root", str(self.root))
@@ -401,17 +276,6 @@ class ProjectDocsTests(unittest.TestCase):
         self.run_cli("validate", "--root", str(self.root))
         self.run_cli("audit", "--root", str(self.root))
         self.run_cli("reader-catalog", "--root", str(self.root))
-        self.run_cli(
-            "reader-read",
-            "--root",
-            str(self.root),
-            "--ids",
-            "architecture",
-            "--max-documents",
-            "4",
-            "--max-bytes",
-            str(PROJECT_DOCS.MAX_READER_BYTES),
-        )
         after = {path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
 

@@ -1,51 +1,27 @@
 ---
 name: uiux-foundation
-description: Use automatically for user-visible frontend and UI/UX work involving interface foundations, design systems, component styling, layout or alignment, responsive or accessibility behavior, mockup implementation, or visual consistency audits. Do not use for backend-only work, non-visual frontend logic, or report, deck, and document artifacts.
+description: Use automatically as design and usability guidance when creating, changing, or reviewing application interfaces.
 ---
 
 # UI/UX Foundation
 
-Keep application design decisions complete, owned by the right artifact, and consistent from intent to rendered behavior.
+Use these references to guide design decisions and improve quality throughout a UI/UX task. Apply the guidance relevant to the task and project context.
 
-## Ground the task
+## Project context
 
-Inspect applicable project instructions and the current UI authority before proposing a design. Look for design or brand documents, tokens and themes, component libraries, global styles, representative routes, mockups, screenshots, and existing visual tests. Treat generic guidance as prompts for missing decisions, never as authority over an established project system.
+Ground design judgments in the project's relevant guidance and existing UI. Use general principles to fill gaps while respecting the requested scope and established design decisions.
 
-Classify the task as `Create`, `Modify`, `Extend`, `Audit`, or `Parity`. An audit or review does not authorize edits. Do not create `DESIGN.md`, a token file, or a component kit by default; preserve the project's existing source of truth and introduce a new durable artifact only when the task requires one.
+A review request remains read-only unless implementation is also requested. Reuse existing sources of truth and add durable artifacts only when the task needs them.
 
-## Route only the needed detail
+## References
 
-- Read [references/foundations.md](references/foundations.md) when creating a system, filling missing foundations, or deciding whether a visual value is reusable.
-- Read [references/application.md](references/application.md) when implementing, modifying, or auditing application UI, components, states, responsiveness, content behavior, or accessibility.
-- Read [references/synchronization.md](references/synchronization.md) when two or more of design system, mockup, and application are in scope, or when diagnosing visual drift.
-- Read [references/verification.md](references/verification.md) before claiming an implementation or UI audit complete.
+Read the references that address the decisions involved in the task. Several may apply together; add others as the work raises new questions. A project's existing design system is task evidence, distinct from guidance on how to build one.
 
-## Place each decision
-
-Assign every material visual decision to the narrowest durable owner that can explain its reuse:
-
-1. foundation or semantic token;
-2. component rule, state, or variant;
-3. screen composition;
-4. intentional local exception.
-
-Prefer existing tokens and components. Promote a repeated local choice into the system, but do not manufacture tokens for values that are genuinely specific to one composition. If a mockup reveals a reusable new rule, update or propose the owning system decision before copying it into application CSS.
-
-## Preserve the artifact contract
-
-- The design system owns reusable visual and interaction rules.
-- The mockup owns screen-level visual intent and composition.
-- The application owns working behavior and must implement both without silent one-off divergence.
-
-```text
-WHEN artifacts disagree:
-    Identify whether the difference is intentional, missing, stale, or accidental.
-    Resolve or preview the owner-level change before propagating it.
-    IF an unresolved choice materially changes product behavior or broad visual direction:
-        Show the smallest comparable options.
-        Stop for approval under the project's change boundary.
-```
-
-## Finish with evidence
-
-Verify the affected rendered states at the relevant viewport and input modes. Compare structure, state, spacing, typography, color, focus, overflow, and responsive behavior against the identified authority. Report the authority inspected, decisions added or reused, intentional exceptions, affected states and viewports, evidence obtained, and anything still unverified.
+- [Design principles and direction](references/design-principles.md): when design choices need a rationale, or when establishing or reconsidering a direction.
+- [Visual design](references/visual-design.md): when composing an interface or judging its visual qualities.
+- [Experience design](references/experience-design.md): when structuring information, user flows, or interaction behavior, or assessing usability.
+- [Design systems](references/design-system.md): when creating, extracting, extending, or restructuring reusable design rules.
+- [Application UI](references/application.md): when implementing or modifying a working interface.
+- [Design synchronization](references/synchronization.md): when considering changes across the design system, mockup, and application, or resolving differences between them.
+- [Design review](references/design-review.md): when diagnosing design problems, comparing alternatives, or prioritizing improvements.
+- [UI verification](references/verification.md): when checking an implemented result or establishing the evidence and limits of a UI review.

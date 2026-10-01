@@ -7,100 +7,81 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const PLUGIN = path.join(ROOT, "marketplace", "hukuhaka-uiux-foundation");
 const SKILL_ROOT = path.join(PLUGIN, "skills", "uiux-foundation");
+const REFERENCES = [
+  "application.md",
+  "design-principles.md",
+  "design-review.md",
+  "design-system.md",
+  "experience-design.md",
+  "synchronization.md",
+  "verification.md",
+  "visual-design.md",
+];
 
 function read(relativePath) {
   return fs.readFileSync(path.join(SKILL_ROOT, relativePath), "utf8");
 }
 
-test("Skill metadata declares frontend and UIUX selection scope and portability", () => {
+function links(text) {
+  return [...text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]);
+}
+
+test("Skill metadata preserves the canonical invocation and implicit eligibility", () => {
   const skill = read("SKILL.md");
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
   const metadata = read("agents/openai.yaml");
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, ".codex-plugin/plugin.json"), "utf8"));
 
   assert.match(frontmatter, /^name:\s*uiux-foundation$/m);
-  assert.match(frontmatter, /Use automatically for user-visible frontend and UI\/UX work/);
-  assert.match(frontmatter, /design systems/);
-  assert.match(frontmatter, /layout or alignment/);
-  assert.match(frontmatter, /responsive or accessibility behavior/);
-  assert.match(frontmatter, /mockup implementation/);
-  assert.match(frontmatter, /backend-only work/);
-  assert.match(frontmatter, /non-visual frontend logic/);
-  assert.match(frontmatter, /report, deck, and document artifacts/);
+  assert.match(frontmatter, /^description:\s*\S.+$/m);
   assert.doesNotMatch(metadata, /allow_implicit_invocation:\s*false/);
   assert.match(metadata, /\$uiux-foundation/);
+  assert.match(manifest.interface.defaultPrompt, /\$uiux-foundation/);
+  assert.equal(manifest.skills, "./skills/");
+  assert.equal(manifest.hooks, undefined);
   assert.doesNotMatch(skill, /\$\{CLAUDE_PLUGIN_ROOT\}|!`|allowed-tools:/);
 });
 
-test("Skill instructions reference applicable detail and constrain scope", () => {
-  const skill = read("SKILL.md");
-  const routed = [
-    "foundations.md",
-    "application.md",
-    "synchronization.md",
-    "verification.md",
-  ];
+test("The topic router exposes every packaged reference without orphaned outlines", () => {
+  const packaged = fs.readdirSync(path.join(SKILL_ROOT, "references"))
+    .filter((name) => name.endsWith(".md")).sort();
+  assert.deepEqual(packaged, REFERENCES);
+  const routed = links(read("SKILL.md"))
+    .filter((target) => target.startsWith("references/"))
+    .map((target) => target.slice("references/".length)).sort();
+  assert.deepEqual(routed, REFERENCES);
 
-  for (const reference of routed) {
-    assert.match(skill, new RegExp(`references/${reference.replace(".", "\\.")}`));
-    assert.ok(fs.existsSync(path.join(SKILL_ROOT, "references", reference)));
+  for (const name of REFERENCES) {
+    const content = read("references/" + name);
+    assert.doesNotMatch(content, /^> Outline only\./m, name + " is still a scaffold");
+    assert.ok(links(content).some((target) => target.startsWith("https://")),
+      name + " has no supporting source link");
   }
-  assert.match(skill, /`Create`, `Modify`, `Extend`, `Audit`, or `Parity`/);
-  assert.match(skill, /An audit or review does not authorize edits/);
-  assert.match(skill, /Do not create `DESIGN\.md`, a token file, or a component kit by default/);
 });
 
-test("foundation instructions list decision areas without fixed style values", () => {
-  const foundations = read("references/foundations.md");
-  for (const heading of [
-    "Visual direction",
-    "Color",
-    "Typography",
-    "Spacing and sizing",
-    "Layout and responsiveness",
-    "Shape and surface",
-    "Interaction and motion",
-    "Content and visual assets",
-    "Components",
-  ]) {
-    assert.match(foundations, new RegExp(`^## ${heading}$`, "m"));
+test("All reference links resolve inside the distributable Skill or use valid HTTPS URLs", () => {
+  const root = fs.realpathSync(SKILL_ROOT);
+  const visited = new Set();
+  const pending = ["SKILL.md"];
+  while (pending.length) {
+    const relative = pending.pop();
+    if (visited.has(relative)) continue;
+    visited.add(relative);
+    for (const link of links(read(relative))) {
+      if (link.startsWith("https://")) {
+        assert.equal(new URL(link).protocol, "https:");
+        continue;
+      }
+      const target = path.resolve(SKILL_ROOT, path.dirname(relative), link.split("#")[0]);
+      assert.ok(fs.existsSync(target), relative + " has a broken link: " + link);
+      const real = fs.realpathSync(target);
+      assert.ok(real.startsWith(root + path.sep), relative + " escapes the Skill: " + link);
+      assert.ok(fs.statSync(real).isFile(), link + " is not a file");
+      const resolved = path.relative(SKILL_ROOT, real);
+      if (resolved.endsWith(".md")) pending.push(resolved);
+    }
   }
-  assert.match(foundations, /`established`, `required now`, `conflicting`, and `deferred`/);
-  assert.match(foundations, /does not mean inventing every possible token or component/);
-  assert.doesNotMatch(foundations, /#[0-9A-Fa-f]{6}|\b(?:8|12|16|24|32)px\b/);
-});
-
-test("application and synchronization instructions state decision ownership", () => {
-  const skill = read("SKILL.md");
-  const application = read("references/application.md");
-  const synchronization = read("references/synchronization.md");
-
-  assert.match(skill, /foundation or semantic token/);
-  assert.match(skill, /component rule, state, or variant/);
-  assert.match(skill, /screen composition/);
-  assert.match(skill, /intentional local exception/);
-  assert.match(application, /loading, empty, error, partial, stale, and success/);
-  assert.match(application, /keyboard reachability, visible focus/);
-  assert.match(application, /rendered and computed geometry/);
-  assert.match(synchronization, /Design system \| Reusable foundations/);
-  assert.match(synchronization, /Mockup \| Screen hierarchy/);
-  assert.match(synchronization, /Application \| Working behavior/);
-  assert.match(synchronization, /`intentional`/);
-  assert.match(synchronization, /`missing`/);
-  assert.match(synchronization, /`stale`/);
-  assert.match(synchronization, /`accidental`/);
-  assert.match(synchronization, /`unresolved`/);
-  assert.match(synchronization, /Do not average conflicting values/);
-});
-
-test("verification instructions require rendered evidence and bounded claims", () => {
-  const verification = read("references/verification.md");
-
-  assert.match(verification, /A successful build is not proof/);
-  assert.match(verification, /in-app Browser/);
-  assert.match(verification, /computed style or geometry/);
-  assert.match(verification, /screenshots, overlays, or visual diffs/);
-  assert.match(verification, /clipping, overlap, page and component overflow/);
-  assert.match(verification, /keyboard navigation, visible focus/);
-  assert.match(verification, /State unverified areas plainly/);
-  assert.match(verification, /Do not generalize one clean screen/);
+  assert.deepEqual([...visited].sort(), [
+    "SKILL.md", ...REFERENCES.map((name) => "references/" + name),
+  ].sort());
 });

@@ -19,7 +19,7 @@ from .common import FileTransaction, InstallerLock, StateError, ensure_within, i
 
 
 def _error(message: str) -> StateError:
-    return StateError(message, host="codex", stage="installer-state")
+    return StateError(message, stage="installer-state")
 
 
 def _now() -> str:
@@ -58,7 +58,7 @@ def _validate(data: Any) -> dict:
             raise _error("invalid component metadata: " + name)
         if record["provenance"] not in {"installed", "legacy"}:
             raise _error("invalid component provenance: " + name)
-        if record["kind"] not in {"plugin", "agent", "template"}:
+        if record["kind"] not in {"plugin", "agent", "template", "marketplace", "profile"}:
             raise _error("invalid component kind: " + name)
         _backups(record)
         if "migrated_from_version" in record and not isinstance(record["migrated_from_version"], str):
@@ -261,7 +261,7 @@ class InstallState:
             self._check(self.backup_path)
             if self.backup_path.exists():
                 detail = "pending transaction recovery" if self.has_pending_transactions() else "a backup"
-                raise _error("installer state is missing but {} exists; run codex state recover before continuing".format(detail))
+                raise _error("installer state is missing but {} exists; run the selected host's state recover before continuing".format(detail))
             return {"schema_version": 1, "components": {}, "operations": []}
         try:
             return decode_state(self.path.read_bytes())
@@ -483,7 +483,7 @@ class InstallState:
         self._check(self.backup_path)
         with InstallerLock(self.home):
             if self.has_pending_transactions():
-                raise _error("pending file transactions must be recovered before restoring a record backup; run codex state recover")
+                raise _error("pending file transactions must be recovered before restoring a record backup; run the selected host's state recover")
             self._check(self.path)
             self._check(self.backup_path)
             if not self.backup_path.exists():

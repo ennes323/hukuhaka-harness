@@ -182,12 +182,14 @@ fi
         )
         return state, codex_home
 
-    def test_claude_host_is_rejected_through_shell_entrypoint(self) -> None:
-        result = self._run(("claude", "install", "--recommended", "--yes"))
+    def test_claude_host_rejects_old_cli_without_installing(self) -> None:
+        self._write_executable("claude", '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.1.100 (Claude Code)"; else echo "[]"; fi\n')
+        result = self._run(("claude", "install", "--recommended", "--dry-run"))
 
-        self.assertEqual(2, result.returncode)
-        self.assertIn("invalid choice: 'claude'", result.stderr)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("2.1.281 or later", result.stdout + result.stderr)
         self.assertNotIn("Installation complete.", result.stdout)
+        self.assertFalse((self.home / ".claude").exists())
 
     def test_fake_codex_desired_state_dry_run_and_lifecycle(self) -> None:
         state, codex_home = self._install_fake_codex()
@@ -349,173 +351,42 @@ fi
         self.assertEqual("recover", after["operations"][-1]["action"])
         self.assertEqual("success", after["operations"][-1]["status"])
 
-    def test_fake_codex_project_docs_plugin_and_reader_are_independently_installable(self) -> None:
+    def test_project_docs_plugin_retires_historical_reader(self) -> None:
         state, codex_home = self._install_fake_codex()
         environment = self._environment(
             CODEX_HOME=str(codex_home),
             FAKE_CODEX_STATE=str(state),
             FAKE_SOURCE_ROOT=str(ROOT),
         )
-
-        plugin_only = self._run(
-            (
-                "codex",
-                "install",
-                "--components",
-                "hukuhaka-project-docs",
-                "--yes",
-            ),
+        rejected = self._run(
+            ("codex", "install", "--components", "project-doc-reader", "--yes"),
             environment=environment,
         )
-        self.assertEqual(0, plugin_only.returncode, plugin_only.stderr)
-        self.assertEqual(
-            ["hukuhaka-project-docs"],
-            (state / "plugins").read_text(encoding="utf-8").splitlines(),
-        )
-        self.assertFalse(
-            (codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
-        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("unknown Codex component 'project-doc-reader'", rejected.stderr)
 
-        reader_only = self._run(
-            (
-                "codex",
-                "install",
-                "--components",
-                "project-doc-reader",
-                "--yes",
-            ),
-            environment=environment,
-        )
-        self.assertEqual(0, reader_only.returncode, reader_only.stderr)
-        self.assertIn("Agent runtime:  existing settings preserved (V1/V2 state not inferred)", reader_only.stdout)
-        self.assertEqual("", (state / "plugins").read_text(encoding="utf-8"))
-        self.assertIn("project-doc-reader", InstallState(codex_home).read()["components"])
-        self.assertFalse((codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists())
-        self.assertTrue(
-            (codex_home / "agents" / "project-doc-reader.toml").is_file()
-        )
-        helper = codex_home / "agents" / "project-doc-reader-tool.py"
-        self.assertTrue(helper.is_file())
-        reader_manifest = InstallState(codex_home).read()["components"]["project-doc-reader"]["receipt"]
-        self.assertEqual(4, reader_manifest["schemaVersion"])
-        self.assertEqual(
-            ["agents/project-doc-reader-tool.py", "agents/project-doc-reader-protocol.py",
-             "agents/project-doc-reader/reader-request-v2.schema.json",
-             "agents/project-doc-reader/reader-response-v2.schema.json"],
-            [item["target"] for item in reader_manifest["resources"]],
-        )
-        self.assertFalse((codex_home / "AGENTS.md").exists())
-
-        paired = (
-            "codex",
-            "install",
-            "--components",
-            "hukuhaka-project-docs,project-doc-reader",
-            "--yes",
-        )
-        first_pair = self._run(paired, environment=environment)
-        second_pair = self._run(paired, environment=environment)
-        self.assertEqual(0, first_pair.returncode, first_pair.stderr)
-        self.assertEqual(0, second_pair.returncode, second_pair.stderr)
-        self.assertEqual(
-            ["hukuhaka-project-docs"],
-            (state / "plugins").read_text(encoding="utf-8").splitlines(),
-        )
-        self.assertEqual(reader_manifest, InstallState(codex_home).read()["components"]["project-doc-reader"]["receipt"])
-
-        coexist = self._run(
-            (
-                "codex",
-                "install",
-                "--components",
-                "astra_worker,project-doc-reader",
-                "--yes",
-            ),
-            environment=environment,
-        )
-        self.assertEqual(0, coexist.returncode, coexist.stderr)
-        self.assertFalse((codex_home / "AGENTS.md").exists())
-        self.assertTrue((codex_home / "agents/astra_worker.toml").is_file())
-        self.assertTrue((codex_home / "agents/project-doc-reader.toml").is_file())
-
-        removed = self._run(
-            ("codex", "uninstall", "--yes"),
-            environment=environment,
-        )
-        self.assertEqual(0, removed.returncode, removed.stderr)
-        self.assertFalse(
-            (codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists()
-        )
-        self.assertFalse(
-            (codex_home / "agents" / "project-doc-reader.toml").exists()
-        )
-        self.assertFalse(helper.exists())
-        self.assertNotIn("project-doc-reader", InstallState(codex_home).read()["components"])
-
-        recommended = ("codex", "install", "--recommended", "--yes")
-        first = self._run(recommended, environment=environment)
-        second = self._run(recommended, environment=environment)
+        fixture = ROOT / "scripts/tests/fixtures/installer-v1.2.0-reader/codex-home"
+        shutil.copytree(fixture, codex_home, dirs_exist_ok=True)
+        unowned = codex_home / "agents/project-doc-reader-protocol.py"
+        unowned.write_bytes(b"personal helper\n")
+        selected = ("codex", "install", "--components", "hukuhaka-project-docs", "--yes")
+        first = self._run(selected, environment=environment)
+        second = self._run(selected, environment=environment)
         self.assertEqual(0, first.returncode, first.stderr)
         self.assertEqual(0, second.returncode, second.stderr)
-        self.assertRegex(
-            first.stdout,
-            r"hukuhaka-worklog +not installed → 0\.5\.0",
-        )
-        self.assertRegex(
-            second.stdout,
-            r"hukuhaka-worklog +0\.5\.0 \(same version\)",
-        )
-        self.assertNotIn("plugin add hukuhaka-uiux-foundation", first.stdout)
-        self.assertNotIn("plugin add hukuhaka-uiux-foundation", second.stdout)
         self.assertEqual(
-            {
-                "hukuhaka-worklog",
-            },
-            set((state / "plugins").read_text(encoding="utf-8").splitlines()),
-        )
-        self.assertIn("agents-md", InstallState(codex_home).read()["components"])
-        self.assertFalse((codex_home / ".hukuhaka-guidance-manifest.json").exists())
-        self.assertFalse((codex_home / ".hukuhaka-evidence-scout-manifest.json").exists())
-        self.assertFalse((codex_home / "agents" / "evidence-scout.toml").exists())
-        self.assertFalse((codex_home / "models-luna-v2.json").exists())
-        self.assertNotIn(
-            "hukuhaka-evidence-scout:begin",
-            (codex_home / "AGENTS.md").read_text(encoding="utf-8"),
-        )
-        config_path = codex_home / "config.toml"
-        config = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-        self.assertNotIn("multi_agent", config)
-        self.assertNotIn("max_concurrent_threads_per_session", config)
-        self.assertNotIn("max_depth", config)
-        self.assertNotIn("model_catalog_json", config)
-
-        reduced = self._run(
-            (
-                "codex",
-                "install",
-                "--components",
-                "hukuhaka-report-planner",
-                "--yes",
-            ),
-            environment=environment,
-        )
-        self.assertEqual(0, reduced.returncode, reduced.stderr)
-        self.assertEqual(
-            ["hukuhaka-report-planner"],
+            ["hukuhaka-project-docs"],
             (state / "plugins").read_text(encoding="utf-8").splitlines(),
         )
-        self.assertFalse((codex_home / ".hukuhaka-guidance-manifest.json").exists())
-        self.assertNotIn("agents-md", InstallState(codex_home).read()["components"])
-        self.assertFalse((codex_home / ".hukuhaka-evidence-scout-manifest.json").exists())
-        self.assertFalse((codex_home / "agents" / "evidence-scout.toml").exists())
-        self.assertFalse((codex_home / "models-luna-v2.json").exists())
-        self.assertFalse((codex_home / "config.toml").exists())
+        self.assertNotIn("project-doc-reader", InstallState(codex_home).read()["components"])
+        self.assertFalse((codex_home / "agents/project-doc-reader.toml").exists())
+        self.assertFalse((codex_home / "agents/project-doc-reader-tool.py").exists())
+        self.assertFalse((codex_home / ".hukuhaka-project-doc-reader-manifest.json").exists())
+        self.assertEqual(b"personal helper\n", unowned.read_bytes())
 
-        first_remove = self._run(("codex", "uninstall", "--yes"), environment=environment)
-        second_remove = self._run(("codex", "uninstall", "--yes"), environment=environment)
-        self.assertEqual(0, first_remove.returncode, first_remove.stderr)
-        self.assertEqual(0, second_remove.returncode, second_remove.stderr)
-        self.assertEqual("", (state / "plugins").read_text(encoding="utf-8"))
+        removed = self._run(("codex", "uninstall", "--yes"), environment=environment)
+        self.assertEqual(0, removed.returncode, removed.stderr)
+        self.assertEqual(b"personal helper\n", unowned.read_bytes())
 
     def test_fake_codex_context_policy_is_scoped_and_reversible(self) -> None:
         state, codex_home = self._install_fake_codex()

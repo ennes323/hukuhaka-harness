@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import termios
 import tty
+import io
+import os
+import textwrap
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, TextIO, Tuple
 
@@ -15,6 +18,7 @@ SECTION_LABELS = {
     "components-section": "Components",
     "settings-section": "Settings",
     "reset-section": "Reset",
+    "profiles-section": "Saved profiles",
 }
 
 
@@ -27,6 +31,7 @@ class HostInstallPlan:
     configure_codex: bool = False
     change_context_window: bool = False
     change_agent_policy: bool = False
+    action: str = "install"
 
 
 @dataclass
@@ -44,6 +49,7 @@ class _HostState:
     change_context_window: bool = False
     agent_policy_status: str = ""
     change_agent_policy: bool = False
+    profile_status: Sequence[Dict[str, Any]] = ()
 
 
 def csv_items(value: str) -> List[str]:
@@ -88,14 +94,23 @@ def _rows(states: Sequence[_HostState]) -> List[Tuple[str, int, int]]:
         if state.host == "codex":
             rows.append(("settings-section", host_index, -1))
             rows.append(("configure", host_index, -1))
+        if state.host == "paseo":
+            rows.append(("profiles-section", host_index, -1))
+            for role_index, _ in enumerate(state.profile_status):
+                rows.append(("profile-status", host_index, role_index))
+            rows.append(("adopt", host_index, -1))
         rows.append(("reset-section", host_index, -1))
         rows.append(("reset", host_index, -1))
-        rows.append(("template", host_index, -1))
+        if state.host != "paseo":
+            rows.append(("template", host_index, -1))
+        rows.extend((action, host_index, -1) for action in ("state-show", "state-recover", "uninstall"))
+        if state.host == "claude":
+            rows.append(("settings", host_index, -1))
     rows.extend((("install", -1, -1), ("exit", -1, -1)))
     return rows
 
 
-def _render(
+def _render_content(
     output: TextIO,
     states: Sequence[_HostState],
     rows: Sequence[Tuple[str, int, int]],
@@ -124,6 +139,12 @@ def _render(
             continue
 
         state = states[host_index]
+        actions = {"state-show": "Inspect installer records", "state-recover": "Review recovery",
+                   "uninstall": "Review removal of managed components", "settings": "Review Claude preferences",
+                   "adopt": "Review existing profiles and explicit UUID adoption"}
+        if kind in actions:
+            output.write("{}    {}\n".format(marker, actions[kind]))
+            continue
         disabled = "" if state.enabled else " (disabled)"
         if kind == "host":
             output.write(
@@ -143,11 +164,17 @@ def _render(
                 and version
             ):
                 descriptor = "{} {}".format(descriptor, version)
-            elif component.get("kind") == "agent":
+            elif component.get("kind") in {"agent", "profile"}:
                 description = str(component.get("description", "")).strip()
-                descriptor = "agent{}".format(
+                descriptor = "{}{}".format(component["kind"],
                     ": " + description if description else ""
                 )
+                if component.get("kind") == "profile":
+                    profile = component.get("profile", {})
+                    fields = ["{}={}".format(key, profile[key]) for key in ("provider", "model", "modeId", "thinkingOptionId") if key in profile]
+                    descriptor = ", ".join(fields) or descriptor
+                    if profile.get("featureValues", {}).get("fast_mode") is True:
+                        descriptor += "; Fast=true: priority processing, increased usage"
             output.write(
                 "{}    [{}] {} ({}){}\n".format(
                     marker,
@@ -157,6 +184,20 @@ def _render(
                     suffix,
                 )
             )
+        elif kind == "profile-status":
+            role = state.profile_status[component_index]
+            profile = role.get("profile") or {}
+            fields = ["{}={}".format(key, profile[key]) for key in ("provider", "model", "modeId", "thinkingOptionId") if key in profile]
+            features = profile.get("featureValues")
+            fast = features.get("fast_mode") if isinstance(features, dict) else None
+            if fast is not None:
+                fields.append("Fast={}".format(fast))
+            detail = " — " + ", ".join(fields) if fields else ""
+            if role.get("id"):
+                detail += " UUID=" + role["id"]
+            if role.get("candidate_ids"):
+                detail += " candidate UUIDs=" + csv_value(role["candidate_ids"])
+            output.write("{}{}: {}{}\n".format(marker, role["role"], role["status"], detail))
         elif kind == "recommended":
             output.write("{}    Select recommended components\n".format(marker))
         elif kind == "configure":
@@ -198,6 +239,32 @@ def _render(
     output.flush()
 
 
+def _render(output, states, rows, cursor):
+    """Keep the focused control visible when two host sections exceed the TTY."""
+    if not output.isatty():
+        _render_content(output, states, rows, cursor)
+        return
+    buffer = io.StringIO()
+    _render_content(buffer, states, rows, cursor)
+    try:
+        width, height = os.get_terminal_size(output.fileno())
+    except OSError:
+        width, height = 80, 24
+    width, height = max(26, width - 1), max(8, height)
+    lines = []
+    for line in buffer.getvalue().removeprefix(CLEAR).splitlines()[3:]:
+        lines.extend(textwrap.wrap(line, width=width, subsequent_indent="      ",
+                                   replace_whitespace=False, drop_whitespace=True) or [""])
+    focus = next((i for i, line in enumerate(lines) if line.startswith("> ")), 0)
+    available = height - 5
+    start = max(0, min(focus - available // 2, len(lines) - available))
+    host_index = rows[cursor][1]
+    label = states[host_index].label if host_index >= 0 else "Apply selection"
+    header = ["Hukuhaka Installer", label[:width], "Up/Down move | Space select", "Enter activate | q exit"]
+    output.write(CLEAR + "\n".join(header + lines[start:start + available]) + "\n")
+    output.flush()
+
+
 def prompt_install_plan(
     input_stream: TextIO,
     output_stream: TextIO,
@@ -210,11 +277,12 @@ def prompt_install_plan(
             host=str(section["host"]),
             label=str(section["label"]),
             version=str(section.get("version", "")),
-            enabled=True,
+            enabled=bool(section.get("enabled", True)),
             components=list(section["components"]),
             selected=set(section["selected"]),
             context_status=str(section.get("context_status", "")),
             agent_policy_status=str(section.get("agent_policy_status", "")),
+            profile_status=list(section.get("profile_status", [])),
         )
         for section in sections
     ]
@@ -268,6 +336,11 @@ def prompt_install_plan(
                 if kind == "exit":
                     return []
                 state = states[host_index]
+                if kind == "profile-status":
+                    return [HostInstallPlan(host=state.host, components=[], action="state-show")]
+                if kind in {"state-show", "state-recover", "uninstall", "settings", "adopt"}:
+                    components = [str(component["name"]) for component in state.components if component["name"] in state.selected] if kind == "adopt" else []
+                    return [HostInstallPlan(host=state.host, components=components, action=kind)]
                 if kind == "host":
                     state.enabled = not state.enabled
                 elif kind == "component" and state.enabled:

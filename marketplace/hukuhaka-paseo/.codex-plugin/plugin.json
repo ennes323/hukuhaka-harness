@@ -1,0 +1,19 @@
+{
+  "name": "hukuhaka-paseo",
+  "version": "0.1.0",
+  "description": "Coordinate bounded Paseo role delegation while Main retains decisions and integration.",
+  "author": {"name": "hukuhaka"},
+  "repository": "https://github.com/hukuhaka/hukuhaka-harness",
+  "license": "MIT",
+  "keywords": ["paseo", "delegation", "roles"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hukuhaka Paseo",
+    "shortDescription": "Delegate bounded work through configured Paseo roles.",
+    "longDescription": "Select a configured role, brief its owned outcome, and reconcile evidence while Main retains user decisions, Git, and Worklog. Uses the upstream Paseo Skills for launch and lifecycle operations.",
+    "developerName": "hukuhaka",
+    "category": "Developer Tools",
+    "capabilities": ["Planning"],
+    "defaultPrompt": "Use $hukuhaka-paseo to coordinate this work through Paseo roles."
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "hukuhaka-plugin",
+  "description": "Hukuhaka workflows for engineering plans, project maintenance, and artifact design.",
+  "owner": {
+    "name": "Hukuhaka"
+  },
+  "plugins": [
+    {
+      "name": "hukuhaka-paseo",
+      "source": "./marketplace/hukuhaka-paseo"
+    },
+    {
+      "name": "hukuhaka-report-planner",
+      "source": "./marketplace/hukuhaka-report-planner"
+    },
+    {
+      "name": "hukuhaka-engineering-plan",
+      "source": "./marketplace/hukuhaka-engineering-plan"
+    },
+    {
+      "name": "hukuhaka-worklog",
+      "source": "./marketplace/hukuhaka-worklog"
+    },
+    {
+      "name": "hukuhaka-memory-audit",
+      "source": "./marketplace/hukuhaka-memory-audit"
+    },
+    {
+      "name": "hukuhaka-project-docs",
+      "source": "./marketplace/hukuhaka-project-docs"
+    },
+    {
+      "name": "hukuhaka-uiux-foundation",
+      "source": "./marketplace/hukuhaka-uiux-foundation"
+    }
+  ]
+}
