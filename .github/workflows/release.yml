@@ -73,6 +73,17 @@ jobs:
         shell: bash
         run: scripts/tests/live-install-claude.sh "${GITHUB_REF_NAME#v}"
 
+      - name: Preview downloaded Paseo profiles (offline, no mutation)
+        shell: bash
+        run: |
+          paseo_fixture=$(mktemp -d)
+          trap 'rm -rf "$paseo_fixture"' EXIT
+          export PASEO_HOME="$paseo_fixture/paseo"
+          export PYTHONDONTWRITEBYTECODE=1
+          curl -fsSL "https://raw.githubusercontent.com/hukuhaka/hukuhaka-harness/${GITHUB_REF_NAME}/scripts/install.sh" |
+            bash -s -- --version "${GITHUB_REF_NAME#v}" paseo install --recommended --dry-run
+          test ! -e "$PASEO_HOME"
+
   publish-release:
     name: Publish GitHub Release
     needs: [release, live-install]

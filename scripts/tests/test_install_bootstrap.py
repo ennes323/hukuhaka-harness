@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import shlex
@@ -188,6 +189,10 @@ fi
             {
                 "PATH": "{}:{}".format(fake_bin, env.get("PATH", "")),
                 "HOME": str(home),
+                "CODEX_HOME": str(home / ".codex"),
+                "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+                "PASEO_HOME": str(home / ".paseo"),
+                "PYTHONDONTWRITEBYTECODE": "1",
                 "BOOTSTRAP_ARCHIVE": str(archive),
                 "BOOTSTRAP_VERSION": version,
                 "BOOTSTRAP_PYTHON_LOG": str(python_log),
@@ -311,11 +316,30 @@ fi
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("Downloading hukuhaka-harness v1.1.1...", result.stdout)
+        self.assertIn("Downloading hukuhaka-harness v1.1.1...", result.stderr)
         self.assertNotIn("unbound variable", result.stderr)
         runtime_calls = [line for line in calls if "-m scripts.install.main" in line]
         self.assertEqual(1, len(runtime_calls), calls)
         self.assertIn("[dry-run] plugin add hukuhaka-report-planner@hukuhaka-harness", result.stdout)
+
+    def test_remote_bootstrap_preserves_json_stdout_for_all_hosts(self) -> None:
+        for host in ("codex", "claude", "paseo"):
+            with self.subTest(host=host):
+                result, home, _ = self.run_remote_bootstrap(
+                    ("--version", "1.1.1", host, "state", "show", "--json")
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIsInstance(json.loads(result.stdout), dict)
+                self.assertIn("Downloading hukuhaka-harness v1.1.1...", result.stderr)
+                self.assertFalse((home / ("." + host) / "hk-config.toml").exists())
+
+    def test_remote_paseo_dry_run_does_not_create_its_home(self) -> None:
+        result, home, _ = self.run_remote_bootstrap(
+            ("paseo", "install", "--recommended", "--dry-run")
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("Dry run complete.", result.stdout)
+        self.assertFalse((home / ".paseo").exists())
 
     def test_remote_bootstrap_ignores_a_lookalike_runtime_in_the_caller_cwd(self) -> None:
         # The documented `curl ... | bash` run from inside any directory that

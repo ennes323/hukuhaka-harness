@@ -92,7 +92,7 @@ else
     fi
     DOWNLOAD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hukuhaka-install.XXXXXX")
     ARCHIVE="$DOWNLOAD_DIR/archive.tar.gz"
-    echo "Downloading hukuhaka-harness v$RESOLVED_VERSION..."
+    echo "Downloading hukuhaka-harness v$RESOLVED_VERSION..." >&2
     curl -fsSL "https://github.com/$REPO/archive/refs/tags/v${RESOLVED_VERSION}.tar.gz" -o "$ARCHIVE"
     python3 - "$ARCHIVE" "$DOWNLOAD_DIR" <<'PY'
 import pathlib, sys, tarfile

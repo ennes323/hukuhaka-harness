@@ -622,8 +622,7 @@ fi
         config.write_text(original)
         inspected = self._run(("codex", "agents", "model", "inspect"), environment=environment)
         self.assertEqual(0, inspected.returncode, inspected.stderr)
-        # The shell bootstrap prints its source banner before the JSON report.
-        report = json.loads(inspected.stdout[inspected.stdout.index("{"):])
+        report = json.loads(inspected.stdout)
         self.assertEqual('"parent"', report["parent"]["model"])
         dry = self._run(("codex", "agents", "model", "inherit", "--dry-run"), environment=environment)
         self.assertEqual(0, dry.returncode, dry.stderr)
