@@ -6,18 +6,12 @@ All notable changes to hukuhaka-harness are documented here. The project follows
 Plugin versions in the native Codex and Claude manifests are independent from
 the repository version.
 
-## [1.4.1] — 2026-10-01
+## [1.4.0] — 2026-10-01
 
 - Keep JSON output valid when using the downloaded installer. Download notices
   now go to stderr, so `state show --json` and other JSON commands work for
   Codex, Claude and Paseo.
 - Add downloaded Paseo profile previews to the macOS/Linux release checks.
-- Include the Claude and Paseo changes listed below. Version 1.4.0 was tagged,
-  but its public GitHub Release was not published because the Claude download
-  check caught the JSON-output defect.
-
-## [1.4.0] — 2026-10-01
-
 - Add Paseo installation management for seven role profiles, including GPT
   and Claude advisors. Existing profiles require explicit UUID adoption;
   updates preserve local edits and removal retains adopted profiles.
